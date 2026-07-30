@@ -98,6 +98,16 @@ XP는 상주 데몬 없이, OS의 스케줄러(cron, Windows 작업 스케줄러
 python -m xp schedule --hour 9 --minute 0 --upload --post --method auto
 ```
 
+매일 고정 시각 대신 매시간 실행하면서, 실행 시각을 매번 무작위로 흔들어
+(정각 이후 0~N분 랜덤 지연) 패턴 탐지를 피하고 싶다면 `--every-hour`를 사용하세요.
+
+```powershell
+python -m xp schedule --every-hour --jitter-minutes 50 --upload --post --method auto
+```
+
+cron은 매시 정각에 트리거되지만, 실제 `xp auto` 실행은 `sleep`으로 0~50분
+사이 무작위 지연된 뒤 이루어져 매번 다른 시각에 게시됩니다.
+
 ### Google Drive 업로드
 
 ```powershell

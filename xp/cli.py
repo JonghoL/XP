@@ -299,35 +299,70 @@ def cmd_schedule(args: argparse.Namespace) -> None:
     auto_cmd = " ".join([python_bin, *auto_args])
     log_path = project_root / "xp-auto.log"
 
-    hour, minute = args.hour, args.minute
-    cron_line = (
-        f'{minute} {hour} * * * cd "{project_root}" && {auto_cmd} '
-        f'>> "{log_path}" 2>&1'
-    )
-
-    console.print(
-        Panel(
-            f"[bold]매일 {hour:02d}:{minute:02d}에 자동 실행하려면 아래 crontab 항목을 추가하세요.[/]\n\n"
-            f"1) 편집기 열기: [cyan]crontab -e[/]\n"
-            f"2) 아래 줄 추가:\n\n"
-            f"[green]{cron_line}[/]\n",
-            title="🕒 cron (macOS/Linux)",
-            border_style="cyan",
+    if args.every_hour:
+        jitter_seconds = max(0, args.jitter_minutes) * 60
+        cron_line = (
+            f'0 * * * * cd "{project_root}" && sleep $(python3 -c '
+            f'"import random;print(random.randint(0,{jitter_seconds}))") '
+            f'&& {auto_cmd} >> "{log_path}" 2>&1'
         )
-    )
-
-    schtasks_cmd = (
-        f'schtasks /create /tn "XP AutoPost" /tr "{auto_cmd}" '
-        f'/sc daily /st {hour:02d}:{minute:02d}'
-    )
-    console.print(
-        Panel(
-            f"관리자 권한 PowerShell/CMD에서 아래 명령을 실행하세요:\n\n"
-            f"[green]{schtasks_cmd}[/]\n",
-            title="🕒 Windows 작업 스케줄러",
-            border_style="cyan",
+        console.print(
+            Panel(
+                f"[bold]매시 정각에 트리거되지만, 실제 실행은 0~{args.jitter_minutes}분 "
+                f"사이 무작위로 지연되어 매번 다른 시각에 게시됩니다 (봇 탐지 회피용).[/]\n\n"
+                f"1) 편집기 열기: [cyan]crontab -e[/]\n"
+                f"2) 아래 줄 추가:\n\n"
+                f"[green]{cron_line}[/]\n",
+                title="🕒 cron (macOS/Linux) — 매시간 + 랜덤 지연",
+                border_style="cyan",
+            )
         )
-    )
+
+        ps_sleep = f"Start-Sleep -Seconds (Get-Random -Maximum {jitter_seconds})"
+        schtasks_cmd = (
+            f'schtasks /create /tn "XP AutoPost" '
+            f'/tr "powershell -Command \\"{ps_sleep}; {auto_cmd}\\"" '
+            f'/sc hourly /mo 1'
+        )
+        console.print(
+            Panel(
+                f"관리자 권한 PowerShell/CMD에서 아래 명령을 실행하세요:\n\n"
+                f"[green]{schtasks_cmd}[/]\n",
+                title="🕒 Windows 작업 스케줄러 — 매시간 + 랜덤 지연",
+                border_style="cyan",
+            )
+        )
+    else:
+        hour, minute = args.hour, args.minute
+        cron_line = (
+            f'{minute} {hour} * * * cd "{project_root}" && {auto_cmd} '
+            f'>> "{log_path}" 2>&1'
+        )
+
+        console.print(
+            Panel(
+                f"[bold]매일 {hour:02d}:{minute:02d}에 자동 실행하려면 아래 crontab 항목을 추가하세요.[/]\n\n"
+                f"1) 편집기 열기: [cyan]crontab -e[/]\n"
+                f"2) 아래 줄 추가:\n\n"
+                f"[green]{cron_line}[/]\n",
+                title="🕒 cron (macOS/Linux)",
+                border_style="cyan",
+            )
+        )
+
+        schtasks_cmd = (
+            f'schtasks /create /tn "XP AutoPost" /tr "{auto_cmd}" '
+            f'/sc daily /st {hour:02d}:{minute:02d}'
+        )
+        console.print(
+            Panel(
+                f"관리자 권한 PowerShell/CMD에서 아래 명령을 실행하세요:\n\n"
+                f"[green]{schtasks_cmd}[/]\n",
+                title="🕒 Windows 작업 스케줄러",
+                border_style="cyan",
+            )
+        )
+
     console.print(
         "[dim]※ 이 명령은 등록 방법을 안내만 합니다. 실제 등록은 사용자가 직접 수행하세요.[/]"
     )
@@ -698,6 +733,17 @@ def main() -> None:
         "--hour", type=int, default=9, help="실행 시각(시), 24시간제 (기본: 9)"
     )
     p_sched.add_argument("--minute", type=int, default=0, help="실행 시각(분) (기본: 0)")
+    p_sched.add_argument(
+        "--every-hour",
+        action="store_true",
+        help="매일 1회 대신 매시간 실행 (실행 시각은 --jitter-minutes 범위 내 무작위)",
+    )
+    p_sched.add_argument(
+        "--jitter-minutes",
+        type=int,
+        default=50,
+        help="--every-hour 사용 시, 정각 이후 0~N분 사이 무작위 지연 (기본: 50)",
+    )
     p_sched.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
     p_sched.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive 업로드도 포함"
