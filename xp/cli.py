@@ -222,10 +222,10 @@ def _finalize_output(
         image_paths = [] if no_image else [img.local_path for img in output.images]
         try:
             output.posts = _post_content(config, content, image_paths, method)
-            _log_post_result(topic, output.posts)
+            _log_post_result(content.topic, output.posts)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
-            _log_post_result(topic, None, error=str(exc))
+            _log_post_result(content.topic, None, error=str(exc))
 
     return output
 
