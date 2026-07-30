@@ -24,10 +24,11 @@ console = Console()
 # 우측 하단 워터마크 기본값. XP_WATERMARK 환경변수로 덮어쓰거나 빈 값으로 끌 수 있습니다.
 DEFAULT_WATERMARK = "@돈버는코드"
 
-# 한글 워터마크용 폰트 후보 (Windows 맑은 고딕 우선).
+# 한글 워터마크용 폰트 후보 (Windows 맑은 고딕 -> macOS 애플 고딕 -> Linux 나눔고딕).
 _FONT_CANDIDATES = (
     r"C:\Windows\Fonts\malgunbd.ttf",
     r"C:\Windows\Fonts\malgun.ttf",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
     "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
 )
