@@ -153,11 +153,16 @@ def _post_json(
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            last_error = exc
-            if exc.code not in (408, 429, 500, 502, 503, 504):
-                raise
+            detail = exc.read().decode("utf-8", errors="replace")
+            wrapped = urllib.error.HTTPError(
+                exc.url, exc.code, f"{exc.reason}: {detail}", exc.headers, None
+            )
+            last_error = wrapped
+            # 400은 모더레이션 오탐 등 일시적일 수 있어 재시도 대상에 포함.
+            if exc.code not in (400, 408, 429, 500, 502, 503, 504):
+                raise wrapped from exc
             if attempt + 1 >= retries:
-                raise
+                raise wrapped from exc
             time.sleep(1.5 * (2**attempt))
         except (TimeoutError, urllib.error.URLError, ConnectionError, OSError) as exc:
             last_error = exc
