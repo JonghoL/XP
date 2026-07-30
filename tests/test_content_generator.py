@@ -8,8 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from xp.config import XAIConfig
-from xp.content_generator import ContentGenerator, _extract_json
+from xp.content_generator import ContentGenerator
 from xp.models import PostType
+from xp.xai_client import extract_json as _extract_json
 
 
 # ──────────────────────────────────────────────
@@ -79,7 +80,7 @@ def single_api_response():
 
 
 class TestContentGeneratorSingle:
-    @patch("xp.content_generator._post_json")
+    @patch("xp.xai_client._post_json")
     @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
     def test_generate_single(self, mock_get_key, mock_post, xai_config, single_api_response):
         mock_post.return_value = single_api_response
@@ -96,7 +97,7 @@ class TestContentGeneratorSingle:
 
 
 class TestContentGeneratorThread:
-    @patch("xp.content_generator._post_json")
+    @patch("xp.xai_client._post_json")
     @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
     def test_generate_thread(self, mock_get_key, mock_post, xai_config):
         mock_post.return_value = _responses_payload(

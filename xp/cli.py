@@ -2,7 +2,11 @@
 
 명령어:
     generate  글 + 이미지 생성 (--upload 으로 GDrive 업로드)
+    topics    Grok에게 최신 화제 기반 주제 제안받기
+    auto      주제 자동 선정 -> 생성 -> (선택)업로드/게시, cron 등 스케줄러용
+    schedule  OS 스케줄러(cron/작업 스케줄러) 등록 안내 출력
     upload    이미 생성된 파일을 GDrive에 업로드
+    post      생성된 콘텐츠를 X에 게시
     list      생성 히스토리 보기
 """
 
@@ -10,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,7 +23,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from xp.config import load_config
+from xp.config import AppConfig, load_config
 from xp.content_generator import ContentGenerator
 from xp.image_generator import ImageGenerator
 from xp.models import GeneratedContent, PostType, ProjectOutput
@@ -53,6 +58,30 @@ def _make_project_dir(output_dir: Path, topic: str) -> Path:
     return project_dir
 
 
+def _recent_topics(output_dir: Path, limit: int) -> list[str]:
+    """최근 생성된 프로젝트들의 주제를 반환합니다 (중복 주제 회피용)."""
+    if not output_dir.exists() or limit <= 0:
+        return []
+
+    dirs = sorted(
+        (d for d in output_dir.iterdir() if d.is_dir()), reverse=True
+    )[:limit]
+
+    topics: list[str] = []
+    for d in dirs:
+        meta_path = d / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        topic = meta.get("topic")
+        if topic:
+            topics.append(topic)
+    return topics
+
+
 def _save_content_files(project_dir: Path, output: ProjectOutput) -> None:
     """생성 결과를 파일로 저장합니다."""
     content = output.content
@@ -84,41 +113,42 @@ def _save_content_files(project_dir: Path, output: ProjectOutput) -> None:
 # ──────────────────────────────────────────────
 
 
-def cmd_generate(args: argparse.Namespace) -> None:
-    """글 + 이미지를 생성합니다."""
-    config = load_config()
+def _generate_pipeline(
+    config: AppConfig,
+    *,
+    topic: str,
+    post_type: PostType,
+    keywords: list[str] | None,
+    tone: str | None,
+    extra: str | None,
+    no_image: bool,
+    upload: bool,
+    post: bool,
+    method: str,
+) -> ProjectOutput:
+    """주제 하나에 대해 생성 -> (선택)업로드/게시까지 수행합니다.
 
+    `generate`/`auto` 명령이 공유하는 핵심 파이프라인입니다.
+    """
     # 1) 콘텐츠 생성
     gen = ContentGenerator(config.xai)
 
-    keywords = args.keywords.split(",") if args.keywords else None
-    post_type = PostType(args.type)
-
     if post_type == PostType.SINGLE:
         content = gen.generate_single(
-            topic=args.topic,
-            keywords=keywords,
-            tone=args.tone,
-            extra=args.extra,
+            topic=topic, keywords=keywords, tone=tone, extra=extra
         )
     else:
         content = gen.generate_thread(
-            topic=args.topic,
-            keywords=keywords,
-            tone=args.tone,
-            extra=args.extra,
+            topic=topic, keywords=keywords, tone=tone, extra=extra
         )
 
     # 프로젝트 디렉토리 생성
-    project_dir = _make_project_dir(config.output_dir, args.topic)
+    project_dir = _make_project_dir(config.output_dir, topic)
 
-    output = ProjectOutput(
-        project_dir=project_dir,
-        content=content,
-    )
+    output = ProjectOutput(project_dir=project_dir, content=content)
 
     # 2) 이미지 생성
-    if content.image_prompt and not args.no_image:
+    if content.image_prompt and not no_image:
         img_gen = ImageGenerator(config.xai)
         images = img_gen.generate(
             prompt=content.image_prompt,
@@ -131,7 +161,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
     _save_content_files(project_dir, output)
 
     # 4) Google Drive 업로드
-    if args.upload:
+    if upload:
         if config.gdrive is None:
             console.print(
                 "[bold red]❌ Google Drive 설정이 없습니다.[/]\n"
@@ -141,21 +171,166 @@ def cmd_generate(args: argparse.Namespace) -> None:
             from xp.gdrive_uploader import GDriveUploader
 
             uploader = GDriveUploader(config.gdrive)
-            uploads = uploader.upload_directory(project_dir)
-            output.uploads = uploads
+            output.uploads = uploader.upload_directory(project_dir)
 
     # 5) X 게시
-    if args.post:
-        image_paths = [] if args.no_image else [
-            img.local_path for img in output.images
-        ]
+    if post:
+        image_paths = [] if no_image else [img.local_path for img in output.images]
         try:
-            output.posts = _post_content(config, content, image_paths, args.method)
+            output.posts = _post_content(config, content, image_paths, method)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
 
-    # 결과 출력
+    return output
+
+
+def cmd_generate(args: argparse.Namespace) -> None:
+    """글 + 이미지를 생성합니다."""
+    config = load_config()
+
+    keywords = args.keywords.split(",") if args.keywords else None
+    output = _generate_pipeline(
+        config,
+        topic=args.topic,
+        post_type=PostType(args.type),
+        keywords=keywords,
+        tone=args.tone,
+        extra=args.extra,
+        no_image=args.no_image,
+        upload=args.upload,
+        post=args.post,
+        method=args.method,
+    )
+
     _print_result(output)
+
+
+# ──────────────────────────────────────────────
+# topics 명령
+# ──────────────────────────────────────────────
+
+
+def cmd_topics(args: argparse.Namespace) -> None:
+    """Grok에게 최신 화제 기반 포스팅 주제를 제안받습니다."""
+    config = load_config()
+
+    from xp.topic_finder import TopicFinder
+
+    avoid = _recent_topics(config.output_dir, args.avoid_recent)
+    finder = TopicFinder(config.xai)
+    topics = finder.suggest(count=args.count, avoid_topics=avoid, category=args.category)
+
+    table = Table(title="제안된 주제")
+    table.add_column("주제", style="cyan")
+    table.add_column("키워드", style="yellow")
+    table.add_column("추천 이유", style="dim")
+
+    for t in topics:
+        table.add_row(t.topic, ", ".join(t.keywords), t.reason or "-")
+
+    console.print(table)
+
+
+# ──────────────────────────────────────────────
+# auto 명령 — 주제 자동 선정 + 생성(+업로드/게시), cron/스케줄러용
+# ──────────────────────────────────────────────
+
+
+def cmd_auto(args: argparse.Namespace) -> None:
+    """주제를 자동으로 선정해 생성(+업로드/게시)까지 수행합니다.
+
+    사람 개입 없이 스케줄러(cron 등)에서 주기적으로 실행하도록 설계되었습니다.
+    """
+    config = load_config()
+
+    from xp.topic_finder import TopicFinder
+
+    avoid = _recent_topics(config.output_dir, args.avoid_recent)
+    finder = TopicFinder(config.xai)
+    topics = finder.suggest(count=1, avoid_topics=avoid, category=args.category)
+    chosen = topics[0]
+
+    console.print(f"[bold cyan]📌 선정된 주제:[/] {chosen.topic}")
+
+    post_type = (
+        PostType(random.choice(["single", "thread"]))
+        if args.type == "random"
+        else PostType(args.type)
+    )
+
+    output = _generate_pipeline(
+        config,
+        topic=chosen.topic,
+        post_type=post_type,
+        keywords=chosen.keywords or None,
+        tone=args.tone,
+        extra=args.extra,
+        no_image=args.no_image,
+        upload=args.upload,
+        post=args.post,
+        method=args.method,
+    )
+
+    _print_result(output)
+
+
+# ──────────────────────────────────────────────
+# schedule 명령 — OS 스케줄러 등록 안내
+# ──────────────────────────────────────────────
+
+
+def cmd_schedule(args: argparse.Namespace) -> None:
+    """`xp auto`를 OS 스케줄러에 등록하는 방법을 안내합니다.
+
+    시스템 crontab/작업 스케줄러를 직접 변경하지 않고, 등록할 명령을 출력만 합니다.
+    """
+    project_root = Path(__file__).resolve().parent.parent
+    python_bin = sys.executable
+
+    auto_args = ["-m", "xp", "auto"]
+    if args.upload:
+        auto_args.append("--upload")
+    if args.post:
+        auto_args.append("--post")
+        auto_args.extend(["--method", args.method])
+    if args.category:
+        auto_args.extend(["--category", args.category])
+
+    auto_cmd = " ".join([python_bin, *auto_args])
+    log_path = project_root / "xp-auto.log"
+
+    hour, minute = args.hour, args.minute
+    cron_line = (
+        f'{minute} {hour} * * * cd "{project_root}" && {auto_cmd} '
+        f'>> "{log_path}" 2>&1'
+    )
+
+    console.print(
+        Panel(
+            f"[bold]매일 {hour:02d}:{minute:02d}에 자동 실행하려면 아래 crontab 항목을 추가하세요.[/]\n\n"
+            f"1) 편집기 열기: [cyan]crontab -e[/]\n"
+            f"2) 아래 줄 추가:\n\n"
+            f"[green]{cron_line}[/]\n",
+            title="🕒 cron (macOS/Linux)",
+            border_style="cyan",
+        )
+    )
+
+    schtasks_cmd = (
+        f'schtasks /create /tn "XP AutoPost" /tr "{auto_cmd}" '
+        f'/sc daily /st {hour:02d}:{minute:02d}'
+    )
+    console.print(
+        Panel(
+            f"관리자 권한 PowerShell/CMD에서 아래 명령을 실행하세요:\n\n"
+            f"[green]{schtasks_cmd}[/]\n",
+            title="🕒 Windows 작업 스케줄러",
+            border_style="cyan",
+        )
+    )
+    console.print(
+        "[dim]※ 이 명령은 등록 방법을 안내만 합니다. 실제 등록은 사용자가 직접 수행하세요.[/]"
+    )
 
 
 # ──────────────────────────────────────────────
@@ -464,6 +639,79 @@ def main() -> None:
         help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
     )
     p_gen.set_defaults(func=cmd_generate)
+
+    # ── topics ──
+    p_topics = subparsers.add_parser(
+        "topics", help="Grok에게 최신 화제 기반 포스팅 주제 제안받기"
+    )
+    p_topics.add_argument(
+        "--count", "-n", type=int, default=5, help="제안받을 주제 개수 (기본: 5)"
+    )
+    p_topics.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
+    p_topics.add_argument(
+        "--avoid-recent",
+        type=int,
+        default=20,
+        help="최근 생성된 몇 개 주제와 겹치지 않게 할지 (기본: 20)",
+    )
+    p_topics.set_defaults(func=cmd_topics)
+
+    # ── auto ── (주제 자동 선정 + 생성, cron/스케줄러용)
+    p_auto = subparsers.add_parser(
+        "auto", help="주제 자동 선정 -> 생성(+업로드/게시), 스케줄러에서 실행용"
+    )
+    p_auto.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
+    p_auto.add_argument(
+        "--avoid-recent",
+        type=int,
+        default=20,
+        help="최근 생성된 몇 개 주제와 겹치지 않게 할지 (기본: 20)",
+    )
+    p_auto.add_argument(
+        "--type",
+        choices=["single", "thread", "random"],
+        default="single",
+        help="포스팅 유형 (기본: single, random 선택 시 무작위)",
+    )
+    p_auto.add_argument("--tone", help="글의 톤 (예: 전문적, 유머러스)")
+    p_auto.add_argument("--extra", help="추가 지시 사항")
+    p_auto.add_argument("--no-image", action="store_true", help="이미지 생성 생략")
+    p_auto.add_argument(
+        "--upload", "-u", action="store_true", help="Google Drive에 업로드"
+    )
+    p_auto.add_argument(
+        "--post", "-p", action="store_true", help="생성 직후 X에 바로 게시"
+    )
+    p_auto.add_argument(
+        "--method",
+        choices=["api", "browser", "auto"],
+        default="api",
+        help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
+    )
+    p_auto.set_defaults(func=cmd_auto)
+
+    # ── schedule ── (OS 스케줄러 등록 안내)
+    p_sched = subparsers.add_parser(
+        "schedule", help="`xp auto`를 OS 스케줄러에 등록하는 방법 안내"
+    )
+    p_sched.add_argument(
+        "--hour", type=int, default=9, help="실행 시각(시), 24시간제 (기본: 9)"
+    )
+    p_sched.add_argument("--minute", type=int, default=0, help="실행 시각(분) (기본: 0)")
+    p_sched.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
+    p_sched.add_argument(
+        "--upload", "-u", action="store_true", help="Google Drive 업로드도 포함"
+    )
+    p_sched.add_argument(
+        "--post", "-p", action="store_true", help="X 게시도 포함"
+    )
+    p_sched.add_argument(
+        "--method",
+        choices=["api", "browser", "auto"],
+        default="api",
+        help="게시 방식 (기본: api)",
+    )
+    p_sched.set_defaults(func=cmd_schedule)
 
     # ── upload ──
     p_up = subparsers.add_parser("upload", help="기존 파일을 Google Drive에 업로드")

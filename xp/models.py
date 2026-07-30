@@ -44,6 +44,14 @@ class GeneratedThread(BaseModel):
         return len(self.tweets)
 
 
+class SuggestedTopic(BaseModel):
+    """Grok이 제안한 포스팅 주제."""
+
+    topic: str = Field(..., description="제안된 주제")
+    keywords: list[str] = Field(default_factory=list, description="관련 키워드")
+    reason: str | None = Field(None, description="이 주제를 추천하는 이유")
+
+
 class GeneratedContent(BaseModel):
     """콘텐츠 생성 결과."""
 

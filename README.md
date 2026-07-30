@@ -68,6 +68,36 @@ python -m xp generate --topic "AI 트렌드" --type single --post
 > `--post`는 생성 직후 바로 X에 게시합니다. Phase 2 설정(`pip install -e ".[phase2]"` +
 > X API 키 4개)이 되어 있어야 하며, 실제 공개 게시이므로 신중히 사용하세요.
 
+### 주제 자동 탐색 + 자동 포스팅
+
+Grok에게 지금 X에서 화제가 될 만한 주제를 조사·제안받아 자동으로 글을 생성합니다.
+최근 생성된 주제와는 겹치지 않도록 제외합니다.
+
+```powershell
+# 화제 주제 5개 미리 보기 (생성은 하지 않음)
+python -m xp topics --count 5
+
+# 주제 1개를 자동 선정해 생성까지 (사람 개입 없이 실행 가능, 스케줄러용)
+python -m xp auto
+
+# 생성 + 업로드 + 게시까지 원스텝
+python -m xp auto --upload --post --method auto
+```
+
+`--type random`을 주면 단건/스레드를 무작위로 선택합니다.
+`--category`로 분야를 좁힐 수 있고, `--avoid-recent`(기본 20)로 최근 몇 개
+주제까지 중복을 피할지 조정합니다.
+
+### 스케줄링 (cron / 작업 스케줄러)
+
+XP는 상주 데몬 없이, OS의 스케줄러(cron, Windows 작업 스케줄러)가
+`xp auto`를 주기적으로 실행하는 방식을 씁니다. `schedule` 명령은 등록할
+명령어를 안내만 하며, 실제 등록(crontab 편집 등)은 직접 수행해야 합니다.
+
+```powershell
+python -m xp schedule --hour 9 --minute 0 --upload --post --method auto
+```
+
 ### Google Drive 업로드
 
 ```powershell
