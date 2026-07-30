@@ -26,9 +26,29 @@ from rich.table import Table
 from xp.config import AppConfig, load_config
 from xp.content_generator import ContentGenerator
 from xp.image_generator import ImageGenerator
-from xp.models import GeneratedContent, PostType, ProjectOutput
+from xp.models import GeneratedContent, PostResult, PostType, ProjectOutput
 
 console = Console()
+
+POST_LOG_PATH = Path("xp-posts.log")
+
+
+def _log_post_result(
+    topic: str, posts: list[PostResult] | None, error: str | None = None
+) -> None:
+    """게시 결과(성공/실패)를 xp-posts.log에 한 줄씩 기록합니다."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = []
+    if error is not None:
+        lines.append(f"[{ts}] FAILED topic={topic!r} error={error!r}")
+    elif posts:
+        for p in posts:
+            lines.append(f"[{ts}] POSTED topic={topic!r} url={p.url} text={p.text!r}")
+    else:
+        lines.append(f"[{ts}] SKIPPED topic={topic!r} (게시 안 함)")
+
+    with POST_LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 # ──────────────────────────────────────────────
@@ -178,8 +198,10 @@ def _generate_pipeline(
         image_paths = [] if no_image else [img.local_path for img in output.images]
         try:
             output.posts = _post_content(config, content, image_paths, method)
+            _log_post_result(topic, output.posts)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
+            _log_post_result(topic, None, error=str(exc))
 
     return output
 
