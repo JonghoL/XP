@@ -17,8 +17,10 @@ from xp.models import (
     PostType,
 )
 from xp.prompts import (
+    SYSTEM_PROMPT_COLUMN,
     SYSTEM_PROMPT_SINGLE,
     SYSTEM_PROMPT_THREAD,
+    build_column_user_prompt,
     build_user_prompt,
 )
 from xp.xai_client import call_chat, extract_json
@@ -69,6 +71,47 @@ class ContentGenerator:
         )
 
         console.print(f"[bold green]✅ 트윗 생성 완료[/] ({len(tweet.text)}자)")
+        return content
+
+    def generate_column(
+        self,
+        research: str,
+        *,
+        title: str | None = None,
+        tone: str | None = None,
+        extra: str | None = None,
+    ) -> GeneratedContent:
+        """리서치 자료(마크다운)를 바탕으로 장문 칼럼을 생성합니다."""
+        user_prompt = build_column_user_prompt(research, tone, extra)
+
+        console.print("[bold cyan]🔄 리서치 자료 기반 장문 칼럼 생성 중...[/]")
+        raw = call_chat(
+            self._config,
+            SYSTEM_PROMPT_COLUMN,
+            user_prompt,
+            temperature=0.7,
+            max_output_tokens=8000,
+        )
+        data = extract_json(raw)
+
+        text = data["text"].strip()
+        resolved_title = (
+            title
+            or data.get("title")
+            or (text.splitlines()[0].strip() if text else "칼럼")
+        )
+
+        tweet = GeneratedTweet(text=text, image_prompt=data.get("image_prompt"))
+
+        content = GeneratedContent(
+            post_type=PostType.COLUMN,
+            topic=resolved_title,
+            tweet=tweet,
+            image_prompt=tweet.image_prompt,
+            model_used=self._config.chat_model,
+        )
+
+        console.print(f"[bold green]✅ 칼럼 생성 완료[/] ({len(text)}자)")
         return content
 
     def generate_thread(

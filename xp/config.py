@@ -79,6 +79,8 @@ class AppConfig:
     gdrive: GDriveConfig | None = None
     xapi: XAPIConfig | None = None
     output_dir: Path = field(default_factory=lambda: Path("output"))
+    # 리서치 md를 넣어두면 `xp column`이 읽어가는 입력 폴더.
+    input_dir: Path = field(default_factory=lambda: Path("input"))
 
     def __post_init__(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -127,5 +129,8 @@ def load_config() -> AppConfig:
         )
 
     output_dir = Path(os.getenv("XP_OUTPUT_DIR", "output"))
+    input_dir = Path(os.getenv("XP_INPUT_DIR", "input"))
 
-    return AppConfig(xai=xai, gdrive=gdrive, xapi=xapi, output_dir=output_dir)
+    return AppConfig(
+        xai=xai, gdrive=gdrive, xapi=xapi, output_dir=output_dir, input_dir=input_dir
+    )

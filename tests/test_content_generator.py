@@ -96,6 +96,40 @@ class TestContentGeneratorSingle:
         mock_get_key.assert_called_once()
 
 
+class TestContentGeneratorColumn:
+    @patch("xp.xai_client._post_json")
+    @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
+    def test_generate_column(self, mock_get_key, mock_post, xai_config):
+        long_text = "서학개미의 시대\n\n" + ("본문 문단입니다. " * 30)
+        mock_post.return_value = _responses_payload(
+            {
+                "title": "서학개미의 시대",
+                "text": long_text,
+                "image_prompt": "An editorial cartoon of ants marching to Wall Street",
+            }
+        )
+
+        gen = ContentGenerator(xai_config)
+        result = gen.generate_column("## 리서치\n- 순매수 5조원\n- SOXL 집중")
+
+        assert result.post_type == PostType.COLUMN
+        assert result.topic == "서학개미의 시대"
+        assert result.tweet is not None
+        assert len(result.tweet.text) > 280  # 롱폼
+        assert result.tweet.hashtags == []  # 칼럼엔 해시태그 없음
+        assert result.image_prompt is not None
+
+    @patch("xp.xai_client._post_json")
+    @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
+    def test_column_title_override(self, mock_get_key, mock_post, xai_config):
+        mock_post.return_value = _responses_payload(
+            {"title": "모델제목", "text": "제목\n\n본문", "image_prompt": None}
+        )
+        gen = ContentGenerator(xai_config)
+        result = gen.generate_column("자료", title="내가정한제목")
+        assert result.topic == "내가정한제목"
+
+
 class TestContentGeneratorThread:
     @patch("xp.xai_client._post_json")
     @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")

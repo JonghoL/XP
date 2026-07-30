@@ -87,11 +87,13 @@ def call_chat(
     temperature: float = 0.8,
     use_search_tools: bool | None = None,
     timeout: int = 240,
+    max_output_tokens: int | None = None,
 ) -> str:
     """Grok Agent Tools API(/responses)를 호출하고 응답 텍스트를 반환합니다.
 
     live_search가 켜져 있으면 web_search·x_search 도구를 붙여 최신 사실을
     조사하게 합니다. X OAuth 토큰 만료(401) 시 자동 갱신 후 재시도합니다.
+    max_output_tokens로 롱폼(장문) 출력 길이를 늘릴 수 있습니다.
     """
     key = config.get_access_token()
 
@@ -101,6 +103,8 @@ def call_chat(
         "input": user_prompt,
         "temperature": temperature,
     }
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
     search = config.live_search if use_search_tools is None else use_search_tools
     if search:
         payload["tools"] = [{"type": "web_search"}, {"type": "x_search"}]

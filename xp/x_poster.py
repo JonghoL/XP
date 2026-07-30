@@ -43,9 +43,9 @@ class XPoster:
         """콘텐츠 유형에 맞춰 트윗 또는 스레드를 게시합니다."""
         images = image_paths or []
 
-        if content.post_type == PostType.SINGLE:
+        if content.post_type in (PostType.SINGLE, PostType.COLUMN):
             if content.tweet is None:
-                raise ValueError("단건 콘텐츠에 tweet이 없습니다.")
+                raise ValueError("단건/칼럼 콘텐츠에 본문이 없습니다.")
             result = self._post_single(content.tweet.full_text, images)
             return [result]
 

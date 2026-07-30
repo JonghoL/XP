@@ -65,8 +65,119 @@ python -m xp generate --topic "AI 트렌드" --type single --upload
 python -m xp generate --topic "AI 트렌드" --type single --post
 ```
 
-> `--post`는 생성 직후 바로 X에 게시합니다. Phase 2 설정(`pip install -e ".[phase2]"` +
-> X API 키 4개)이 되어 있어야 하며, 실제 공개 게시이므로 신중히 사용하세요.
+### 장문 칼럼 (리서치 md 기반 롱폼)
+
+주제만 던지는 짧은 트윗과 달리, **내가 직접 리서치한 자료(마크다운)를 근간으로
+한 편의 완결된 장문 칼럼(롱폼)**을 작성하는 기능입니다. 최신 이슈를 깊이 있게
+다루거나, 내가 수집한 팩트·관점을 그대로 살리고 싶을 때 사용합니다.
+
+**동작 방식**
+
+1. 입력 폴더(`input/`, 환경변수 `XP_INPUT_DIR`로 변경 가능)에 리서치 `.md` 파일을 넣습니다.
+2. `python -m xp column`을 실행하면 Grok이 그 자료를 근간으로 헤드라인 + 문단 구성을
+   갖춘 칼럼을 작성합니다(도입 → 전개 → 통찰 → 마무리, 대략 1,200~3,000자).
+3. 결과가 `output/<날짜>-<헤드라인>/`에 저장되고, 처리한 원본 md는 `input/processed/`로
+   이동해 다음 실행 때 중복 처리되지 않습니다.
+
+**리서치 md 작성 팁** — 형식은 자유이며, 아래처럼 팩트와 내 관점을 적어두면
+그대로 칼럼에 반영됩니다.
+
+```markdown
+# 주제 메모
+
+## 핵심 팩트
+- 수치/사건/발표 (예: 7월 순매수 5.2조원, 전월 대비 5배)
+- 배경과 원인
+- 리스크
+
+## 내 관점
+- 강조하고 싶은 논지나 결론
+```
+
+**명령어**
+
+```powershell
+# input/ 의 모든 .md 를 칼럼으로 작성 (처리 후 processed/ 로 이동)
+python -m xp column
+
+# 특정 파일만 지정 (이 경우 원본을 이동하지 않음)
+python -m xp column --file "research/서학개미.md"
+
+# 헤더 풍자만화 이미지 생략
+python -m xp column --no-image
+
+# 헤드라인을 직접 지정 (생략 시 모델이 생성)
+python -m xp column --title "내가 정한 제목"
+
+# 작성 직후 바로 X에 게시
+python -m xp column --post --method auto
+
+# 처리 후 원본 md 를 processed/ 로 옮기지 않고 그대로 두기
+python -m xp column --keep
+```
+
+**옵션 요약**
+
+| 옵션 | 설명 |
+|------|------|
+| `--file`, `-f` | 처리할 md 파일 (생략 시 `input/`의 모든 `.md`) |
+| `--title` | 헤드라인 강제 지정 (생략 시 모델 생성) |
+| `--tone` | 글의 톤 (예: 분석적, 논쟁적) |
+| `--extra` | 추가 지시 사항 |
+| `--no-image` | 헤더 이미지 생략 |
+| `--upload`, `-u` | Google Drive 업로드 |
+| `--post`, `-p` | 작성 직후 X에 게시 |
+| `--method` | 게시 방식 `api`(기본)/`browser`/`auto` |
+| `--keep` | 처리 후 원본 md를 이동하지 않음 |
+
+**결과물** — 프로젝트 폴더에 다음이 저장됩니다.
+
+```text
+output/2026-07-30-국장을-떠난-5조-원.../
+  column.txt        ← 칼럼 전문 (헤드라인 + 본문)
+  meta.json         ← 메타데이터 (post_type: column 등)
+  post_image.png    ← 헤더 풍자만화 (--no-image 아니면)
+```
+
+> ⚠️ **X Premium 필요** — 280자를 넘는 롱폼을 실제로 게시하려면 게시 계정이
+> X Premium이어야 합니다. 그렇지 않으면 API가 길이 초과로 거부합니다.
+> (작성·저장 자체는 계정과 무관하게 됩니다.)
+
+#### X 아티클(배너형 롱폼)로 발행하기
+
+상단에 배너(커버) 이미지가 박히는 **X 아티클**은 공개 API가 없어 자동 게시가
+불가능합니다(웹 아티클 작성기에서 직접 발행, X Premium+ 필요). 대신 `article`
+명령이 붙여넣기 좋게 준비해 줍니다 — 제목/본문을 분리하고 **본문을 클립보드에
+자동 복사**합니다.
+
+```powershell
+python -m xp article --dir "output/2026-07-30-..."
+```
+
+그다음 X 웹의 **‘아티클 작성(Write Article)’**에서
+① 커버에 `post_image.png` 업로드 → ② 제목 붙여넣기 → ③ 본문 붙여넣기(클립보드에 있음)
+→ ④ 게시. (일반 롱폼 포스트로 올릴 거면 이 단계 없이 `post`/`--post`를 쓰면 됩니다.)
+
+**브라우저 완전 자동 발행 (`--post`)** — 작성기를 열어 제목·커버·본문을 채우고
+게시까지 **수동 개입 없이** 자동 진행합니다. 최초 1회 `python -m xp x-browser-login`
+으로 로그인해 두어야 합니다(X Premium+ 필요).
+
+```powershell
+# input/ md → 칼럼 생성 → 아티클 작성기 자동 조작 → 발행까지
+python -m xp article --post
+
+# 기존 칼럼 폴더로
+python -m xp article --dir "output/..." --post
+
+# 발행 직전까지만 채우고, 브라우저에서 검토 후 직접 게시
+python -m xp article --dir "output/..." --post --review
+```
+
+> ⚠️ 아티클은 공개 API가 없어 웹 UI를 자동 조작합니다. DOM(셀렉터)이 실측
+> 검증되지 않아, 필수 요소(제목/본문/게시 버튼)를 못 찾으면 **페이지 덤프
+> (HTML·스크린샷)를 프로젝트 폴더에 저장하고 명확히 실패**합니다. 그 덤프로
+> `xp/x_poster_browser.py` 상단 `SEL_ART_*` 상수를 실제 DOM에 맞게 고치면
+> 이후엔 완전 자동으로 돌아갑니다.
 
 ### 주제 자동 탐색 + 자동 포스팅
 
@@ -125,8 +236,8 @@ python -m xp list
 ```text
 output/
   2026-07-29-ai-트렌드/
-    tweet.txt            ← 트윗 본문
-    meta.json            ← 메타데이터 (주제, 키워드, 모델 등)
+    tweet.txt            ← 트윗 본문 (스레드는 thread.txt, 칼럼은 column.txt)
+    meta.json            ← 메타데이터 (주제, 유형, 모델 등)
     post_image.png       ← 생성된 이미지
 ```
 

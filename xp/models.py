@@ -14,6 +14,7 @@ class PostType(str, Enum):
 
     SINGLE = "single"
     THREAD = "thread"
+    COLUMN = "column"  # 리서치 md 기반 장문 칼럼 (롱폼)
 
 
 class GeneratedTweet(BaseModel):

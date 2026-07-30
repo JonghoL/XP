@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -106,10 +107,10 @@ def _save_content_files(project_dir: Path, output: ProjectOutput) -> None:
     """생성 결과를 파일로 저장합니다."""
     content = output.content
 
-    # 트윗 텍스트 저장
+    # 트윗/칼럼 텍스트 저장
     if content.tweet:
-        tweet_path = project_dir / "tweet.txt"
-        tweet_path.write_text(content.tweet.full_text, encoding="utf-8")
+        fname = "column.txt" if content.post_type == PostType.COLUMN else "tweet.txt"
+        (project_dir / fname).write_text(content.tweet.full_text, encoding="utf-8")
 
     if content.thread:
         thread_path = project_dir / "thread.txt"
@@ -162,8 +163,31 @@ def _generate_pipeline(
             topic=topic, keywords=keywords, tone=tone, extra=extra
         )
 
+    return _finalize_output(
+        config,
+        content,
+        no_image=no_image,
+        upload=upload,
+        post=post,
+        method=method,
+    )
+
+
+def _finalize_output(
+    config: AppConfig,
+    content: GeneratedContent,
+    *,
+    no_image: bool,
+    upload: bool,
+    post: bool,
+    method: str,
+) -> ProjectOutput:
+    """생성된 콘텐츠에 대해 이미지·저장·업로드·게시를 수행합니다.
+
+    `generate`/`auto`/`column` 명령이 공유하는 후처리 파이프라인입니다.
+    """
     # 프로젝트 디렉토리 생성
-    project_dir = _make_project_dir(config.output_dir, topic)
+    project_dir = _make_project_dir(config.output_dir, content.topic)
 
     output = ProjectOutput(project_dir=project_dir, content=content)
 
@@ -225,6 +249,86 @@ def cmd_generate(args: argparse.Namespace) -> None:
     )
 
     _print_result(output)
+
+
+# ──────────────────────────────────────────────
+# column 명령 — 리서치 md 기반 장문 칼럼
+# ──────────────────────────────────────────────
+
+
+def _column_sources(config: AppConfig, file_arg: str | None) -> list[Path]:
+    """처리할 리서치 md 파일 목록을 결정합니다.
+
+    --file이 있으면 그 파일만, 없으면 입력 폴더의 *.md 전부(processed 제외).
+    """
+    if file_arg:
+        p = Path(file_arg)
+        if not p.is_file():
+            console.print(f"[bold red]❌ 파일을 찾을 수 없습니다: {p}[/]")
+            sys.exit(1)
+        return [p]
+
+    input_dir = config.input_dir
+    if not input_dir.exists():
+        input_dir.mkdir(parents=True, exist_ok=True)
+        console.print(
+            f"[yellow]입력 폴더를 만들었습니다: {input_dir}\n"
+            f"  여기에 리서치 .md 파일을 넣고 다시 실행하세요.[/]"
+        )
+        return []
+
+    files = sorted(
+        p for p in input_dir.glob("*.md") if p.parent.name != "processed"
+    )
+    if not files:
+        console.print(
+            f"[yellow]{input_dir}에 처리할 .md 파일이 없습니다. "
+            f"리서치 파일을 넣고 다시 실행하세요.[/]"
+        )
+    return files
+
+
+def cmd_column(args: argparse.Namespace) -> None:
+    """리서치 md 파일을 장문 칼럼으로 작성합니다."""
+    config = load_config()
+    sources = _column_sources(config, args.file)
+    if not sources:
+        return
+
+    gen = ContentGenerator(config.xai)
+
+    for src in sources:
+        console.print(f"\n[bold]📄 리서치 파일:[/] {src}")
+        research = src.read_text(encoding="utf-8").strip()
+        if not research:
+            console.print(f"[yellow]⚠️  빈 파일, 건너뜁니다: {src}[/]")
+            continue
+
+        content = gen.generate_column(
+            research,
+            title=args.title,
+            tone=args.tone,
+            extra=args.extra,
+        )
+        output = _finalize_output(
+            config,
+            content,
+            no_image=args.no_image,
+            upload=args.upload,
+            post=args.post,
+            method=args.method,
+        )
+        _print_result(output)
+
+        # 원본을 processed/로 이동 (입력 폴더에서 온 경우에만)
+        if args.file is None and not args.keep:
+            processed = config.input_dir / "processed"
+            processed.mkdir(parents=True, exist_ok=True)
+            dest = processed / src.name
+            if dest.exists():
+                dest = processed / f"{src.stem}-{datetime.now():%H%M%S}{src.suffix}"
+            src.rename(dest)
+            console.print(f"[dim]→ 처리 완료, 원본 이동: {dest}[/]")
 
 
 # ──────────────────────────────────────────────
@@ -518,6 +622,173 @@ def cmd_post(args: argparse.Namespace) -> None:
 
 
 # ──────────────────────────────────────────────
+# article 명령 — X 아티클(배너형 롱폼) 반자동 발행 준비
+# ──────────────────────────────────────────────
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """본문을 OS 클립보드에 복사합니다 (best-effort, 실패해도 무해)."""
+    import subprocess
+
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
+                input=text, text=True, encoding="utf-8", check=True,
+            )
+        elif sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text, text=True, check=True)
+        else:
+            subprocess.run(
+                ["xclip", "-selection", "clipboard"], input=text, text=True, check=True
+            )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _prepare_article_cover(project_dir: Path) -> Path | None:
+    """아티클 배너용 5:2 커버 이미지를 준비합니다.
+
+    X 아티클 커버 규격은 5:2이므로, 생성된 16:9 이미지를 5:2로 크롭한 별도
+    커버(cover_5x2.png)를 만든다. 크롭으로 잘려나간 워터마크는 다시 합성한다.
+    """
+    import shutil
+
+    from xp.image_generator import add_watermark, fit_aspect_ratio
+
+    src = project_dir / "post_image.png"
+    if not src.exists():
+        return None
+    cover = project_dir / "cover_5x2.png"
+    try:
+        shutil.copyfile(src, cover)
+        fit_aspect_ratio(cover, 5 / 2)  # 5:2 배너 비율
+        add_watermark(cover)
+        return cover
+    except Exception:  # noqa: BLE001
+        return src
+
+
+def _article_from_dir(project_dir: Path, *, post: bool, review: bool) -> None:
+    """이미 생성된 칼럼 디렉토리를 아티클로 준비(+선택 발행)합니다."""
+    content = _load_content(project_dir)
+    if content.tweet is None:
+        console.print(f"[bold red]❌ 본문이 없는 프로젝트입니다: {project_dir}[/]")
+        return
+
+    title = content.topic
+    full = content.tweet.text.strip()
+    lines = full.splitlines()
+    # 첫 줄이 제목과 사실상 같으면 본문에서 제외한다.
+    if lines and lines[0].strip() == title.strip():
+        body = "\n".join(lines[1:]).lstrip("\n")
+    else:
+        body = full
+    # X 아티클(DraftJS)은 빈 줄마다 빈 블록을 만들어 간격이 두 배가 된다.
+    # 문단 간격은 아티클이 알아서 주므로, 빈 줄을 단일 줄바꿈으로 정리한다.
+    body = re.sub(r"\n{2,}", "\n", body).strip()
+    (project_dir / "body.txt").write_text(body, encoding="utf-8")
+
+    cover = _prepare_article_cover(project_dir)
+    cover_line = str(cover) if cover else "(없음 — --no-image로 생성됨)"
+    copied = _copy_to_clipboard(body)
+
+    # 브라우저 자동화로 아티클 작성기까지 조작 (셀렉터 미검증, 어시스트 방식)
+    if post:
+        from xp.x_poster_browser import BrowserXPoster
+
+        console.print(
+            "[yellow]※ X 아티클은 공개 API가 없어 브라우저로 작성기를 자동 조작합니다.[/]"
+        )
+        BrowserXPoster(headless=False).post_article(
+            title,
+            body,
+            cover,
+            publish=not review,
+            hold_for_review=review,
+            debug_dir=project_dir,
+        )
+        return
+
+    console.print(
+        Panel(
+            f"[bold]제목:[/] {title}\n"
+            f"[bold]커버 이미지:[/] {cover_line}\n"
+            f"[bold]본문:[/] {project_dir / 'body.txt'} "
+            f"({len(body)}자){'  [green]— 클립보드에 복사됨[/]' if copied else ''}",
+            title="📰 X 아티클 발행 준비 완료",
+            border_style="green",
+        )
+    )
+    console.print(
+        "[bold]붙여넣기 순서[/] (X는 아티클 API가 없어 작성기에서 직접 발행합니다):\n"
+        "  1) X 웹 → 글쓰기 창의 [cyan]‘아티클 작성(Write Article)’[/] 진입\n"
+        "     (X Premium+ 필요)\n"
+        "  2) 커버(헤더) 이미지 업로드 → 위 post_image.png\n"
+        "  3) 제목 칸에 위 제목 붙여넣기\n"
+        f"  4) 본문에 붙여넣기 — 이미 클립보드에 있음{' ✅' if copied else ' (body.txt에서 복사)'}\n"
+        "  5) 검토 후 게시"
+    )
+
+
+def cmd_article(args: argparse.Namespace) -> None:
+    """리서치 md(또는 기존 칼럼 디렉토리)를 X 아티클로 준비/발행합니다.
+
+    --dir 를 주면 이미 만든 칼럼 폴더를 아티클로 처리하고, 없으면 input/ 폴더의
+    md(또는 --file)를 읽어 칼럼을 생성한 뒤 곧바로 아티클로 이어갑니다.
+
+    X 아티클(상단 배너 + 리치서식)은 공개 API가 없어, 준비(제목/본문 분리 +
+    클립보드 복사) 후 붙여넣거나 --post로 브라우저 작성기를 조작해 발행합니다.
+    """
+    config = load_config()
+
+    # 1) --dir 지정 시: 기존 칼럼 폴더를 그대로 사용
+    if args.dir:
+        project_dir = Path(args.dir)
+        if not project_dir.is_dir():
+            console.print(f"[bold red]❌ 디렉토리를 찾을 수 없습니다: {project_dir}[/]")
+            sys.exit(1)
+        _article_from_dir(project_dir, post=args.post, review=args.review)
+        return
+
+    # 2) 그 외: input/ 폴더의 md(또는 --file)로 칼럼을 생성한 뒤 아티클로
+    sources = _column_sources(config, args.file)
+    if not sources:
+        return
+
+    gen = ContentGenerator(config.xai)
+    for src in sources:
+        console.print(f"\n[bold]📄 리서치 파일:[/] {src}")
+        research = src.read_text(encoding="utf-8").strip()
+        if not research:
+            console.print(f"[yellow]⚠️  빈 파일, 건너뜁니다: {src}[/]")
+            continue
+
+        content = gen.generate_column(
+            research, title=args.title, tone=args.tone, extra=args.extra
+        )
+        output = _finalize_output(
+            config, content,
+            no_image=args.no_image, upload=False, post=False, method="api",
+        )
+        _print_result(output)
+
+        _article_from_dir(output.project_dir, post=args.post, review=args.review)
+
+        # 원본을 processed/로 이동 (입력 폴더에서 온 경우에만)
+        if args.file is None and not args.keep:
+            processed = config.input_dir / "processed"
+            processed.mkdir(parents=True, exist_ok=True)
+            dest = processed / src.name
+            if dest.exists():
+                dest = processed / f"{src.stem}-{datetime.now():%H%M%S}{src.suffix}"
+            src.rename(dest)
+            console.print(f"[dim]→ 처리 완료, 원본 이동: {dest}[/]")
+
+
+# ──────────────────────────────────────────────
 # list 명령
 # ──────────────────────────────────────────────
 
@@ -581,10 +852,11 @@ def _print_result(output: ProjectOutput) -> None:
     )
 
     if content.tweet:
+        is_column = content.post_type == PostType.COLUMN
         console.print(
             Panel(
                 content.tweet.full_text,
-                title="🐦 트윗",
+                title="📰 칼럼" if is_column else "🐦 트윗",
                 border_style="cyan",
             )
         )
@@ -697,6 +969,37 @@ def main() -> None:
     )
     p_gen.set_defaults(func=cmd_generate)
 
+    # ── column ── (리서치 md 기반 장문 칼럼)
+    p_col = subparsers.add_parser(
+        "column", help="리서치 md 파일을 장문(칼럼)으로 작성"
+    )
+    p_col.add_argument(
+        "--file", "-f",
+        help="리서치 md 파일 경로 (생략 시 입력 폴더의 *.md 전부 처리)",
+    )
+    p_col.add_argument("--title", help="칼럼 제목 강제 지정 (생략 시 모델이 생성)")
+    p_col.add_argument("--tone", help="글의 톤 (예: 분석적, 논쟁적)")
+    p_col.add_argument("--extra", help="추가 지시 사항")
+    p_col.add_argument("--no-image", action="store_true", help="헤더 이미지 생략")
+    p_col.add_argument(
+        "--upload", "-u", action="store_true", help="Google Drive에 업로드"
+    )
+    p_col.add_argument(
+        "--post", "-p", action="store_true", help="생성 직후 X에 바로 게시"
+    )
+    p_col.add_argument(
+        "--method",
+        choices=["api", "browser", "auto"],
+        default="api",
+        help="게시 방식: api(기본) / browser(비상) / auto(폴백)",
+    )
+    p_col.add_argument(
+        "--keep",
+        action="store_true",
+        help="처리 후 입력 md를 processed/로 이동하지 않고 그대로 둠",
+    )
+    p_col.set_defaults(func=cmd_column)
+
     # ── topics ──
     p_topics = subparsers.add_parser(
         "topics", help="Grok에게 최신 화제 기반 포스팅 주제 제안받기"
@@ -800,6 +1103,38 @@ def main() -> None:
         help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
     )
     p_post.set_defaults(func=cmd_post)
+
+    # ── article ── (input md → 칼럼 → X 아티클 준비/발행)
+    p_art = subparsers.add_parser(
+        "article",
+        help="리서치 md(input/) 또는 기존 칼럼 폴더를 X 아티클로 준비/발행",
+    )
+    p_art.add_argument(
+        "--dir", "-d",
+        help="기존 칼럼 프로젝트 디렉토리 (생략 시 input/ 의 md로 새로 생성)",
+    )
+    p_art.add_argument(
+        "--file", "-f",
+        help="리서치 md 파일 (생략 시 input/ 의 *.md 전부, --dir 없을 때만)",
+    )
+    p_art.add_argument("--title", help="칼럼 제목 강제 지정")
+    p_art.add_argument("--tone", help="글의 톤")
+    p_art.add_argument("--extra", help="추가 지시 사항")
+    p_art.add_argument("--no-image", action="store_true", help="커버 이미지 생성 생략")
+    p_art.add_argument(
+        "--keep", action="store_true", help="처리 후 input md를 이동하지 않음"
+    )
+    p_art.add_argument(
+        "--post", "-p",
+        action="store_true",
+        help="브라우저로 아티클 작성기까지 조작해 발행 (X Premium+, 최초 x-browser-login 필요)",
+    )
+    p_art.add_argument(
+        "--review",
+        action="store_true",
+        help="--post 시 마지막 게시는 누르지 않고 검토용으로 멈춤",
+    )
+    p_art.set_defaults(func=cmd_article)
 
     # ── list ──
     p_list = subparsers.add_parser("list", help="생성 히스토리 보기")

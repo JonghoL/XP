@@ -52,6 +52,26 @@ class TestPostSingle:
         assert results[0].media_ids == []
 
 
+class TestPostColumn:
+    def test_column_posted_as_single(self, xapi_config):
+        long_text = "제목\n\n" + ("본문 " * 100)
+        content = GeneratedContent(
+            post_type=PostType.COLUMN,
+            topic="칼럼 제목",
+            tweet=GeneratedTweet(text=long_text),
+        )
+        v2 = _fake_v2([777])
+        poster = XPoster(xapi_config)
+        with patch.object(poster, "_client_v2", return_value=v2):
+            results = poster.post_content(content, [])
+
+        assert len(results) == 1
+        assert results[0].tweet_id == "777"
+        # 롱폼 전체가 한 번의 create_tweet로 게시된다.
+        assert v2.create_tweet.call_args.kwargs["text"] == long_text
+        assert "in_reply_to_tweet_id" not in v2.create_tweet.call_args.kwargs
+
+
 class TestPostThread:
     def test_thread_chains_replies(self, xapi_config):
         content = GeneratedContent(
