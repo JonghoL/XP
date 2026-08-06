@@ -28,6 +28,7 @@ from xp.config import AppConfig, load_config
 from xp.content_generator import ContentGenerator
 from xp.image_generator import ImageGenerator
 from xp.models import GeneratedContent, PostResult, PostType, ProjectOutput
+from xp.pillars import PILLARS, choose_pillar, get_pillar
 
 console = Console()
 
@@ -35,18 +36,22 @@ POST_LOG_PATH = Path("xp-posts.log")
 
 
 def _log_post_result(
-    topic: str, posts: list[PostResult] | None, error: str | None = None
+    topic: str,
+    posts: list[PostResult] | None,
+    error: str | None = None,
+    pillar: str | None = None,
 ) -> None:
     """게시 결과(성공/실패)를 xp-posts.log에 한 줄씩 기록합니다."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tag = f"pillar={pillar!r} " if pillar else ""
     lines = []
     if error is not None:
-        lines.append(f"[{ts}] FAILED topic={topic!r} error={error!r}")
+        lines.append(f"[{ts}] FAILED {tag}topic={topic!r} error={error!r}")
     elif posts:
         for p in posts:
-            lines.append(f"[{ts}] POSTED topic={topic!r} url={p.url} text={p.text!r}")
+            lines.append(f"[{ts}] POSTED {tag}topic={topic!r} url={p.url} text={p.text!r}")
     else:
-        lines.append(f"[{ts}] SKIPPED topic={topic!r} (게시 안 함)")
+        lines.append(f"[{ts}] SKIPPED {tag}topic={topic!r} (게시 안 함)")
 
     with POST_LOG_PATH.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -146,6 +151,7 @@ def _generate_pipeline(
     upload: bool,
     post: bool,
     method: str,
+    pillar: str | None = None,
 ) -> ProjectOutput:
     """주제 하나에 대해 생성 -> (선택)업로드/게시까지 수행합니다.
 
@@ -162,6 +168,9 @@ def _generate_pipeline(
         content = gen.generate_thread(
             topic=topic, keywords=keywords, tone=tone, extra=extra
         )
+
+    if pillar:
+        content.pillar = pillar
 
     return _finalize_output(
         config,
@@ -222,10 +231,10 @@ def _finalize_output(
         image_paths = [] if no_image else [img.local_path for img in output.images]
         try:
             output.posts = _post_content(config, content, image_paths, method)
-            _log_post_result(content.topic, output.posts)
+            _log_post_result(content.topic, output.posts, pillar=content.pillar)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
-            _log_post_result(content.topic, None, error=str(exc))
+            _log_post_result(content.topic, None, error=str(exc), pillar=content.pillar)
 
     return output
 
@@ -342,9 +351,13 @@ def cmd_topics(args: argparse.Namespace) -> None:
 
     from xp.topic_finder import TopicFinder
 
+    category = args.category
+    if args.pillar:
+        category = get_pillar(args.pillar).category
+
     avoid = _recent_topics(config.output_dir, args.avoid_recent)
     finder = TopicFinder(config.xai)
-    topics = finder.suggest(count=args.count, avoid_topics=avoid, category=args.category)
+    topics = finder.suggest(count=args.count, avoid_topics=avoid, category=category)
 
     table = Table(title="제안된 주제")
     table.add_column("주제", style="cyan")
@@ -366,23 +379,32 @@ def cmd_auto(args: argparse.Namespace) -> None:
     """주제를 자동으로 선정해 생성(+업로드/게시)까지 수행합니다.
 
     사람 개입 없이 스케줄러(cron 등)에서 주기적으로 실행하도록 설계되었습니다.
+    --category를 직접 지정하지 않으면, 3개 니치 축(xp.pillars) 중 하나를
+    가중치 기반으로 자동 선택해 계정 정체성을 일관되게 유지합니다.
     """
     config = load_config()
 
     from xp.topic_finder import TopicFinder
 
+    pillar = None
+    category = args.category
+    if category is None:
+        pillar = get_pillar(args.pillar) if args.pillar else choose_pillar()
+        category = pillar.category
+        console.print(f"[bold cyan]🧭 선택된 니치:[/] {pillar.key} · {pillar.name}")
+
     avoid = _recent_topics(config.output_dir, args.avoid_recent)
     finder = TopicFinder(config.xai)
-    topics = finder.suggest(count=1, avoid_topics=avoid, category=args.category)
+    topics = finder.suggest(count=1, avoid_topics=avoid, category=category)
     chosen = topics[0]
 
     console.print(f"[bold cyan]📌 선정된 주제:[/] {chosen.topic}")
 
-    post_type = (
-        PostType(random.choice(["single", "thread"]))
-        if args.type == "random"
-        else PostType(args.type)
-    )
+    if args.type == "random":
+        # 단건 60% : 스레드 30% 비중을 2:1 가중치로 근사합니다.
+        post_type = PostType(random.choices(["single", "thread"], weights=[2, 1])[0])
+    else:
+        post_type = PostType(args.type)
 
     output = _generate_pipeline(
         config,
@@ -395,6 +417,7 @@ def cmd_auto(args: argparse.Namespace) -> None:
         upload=args.upload,
         post=args.post,
         method=args.method,
+        pillar=pillar.name if pillar else None,
     )
 
     _print_result(output)
@@ -403,6 +426,29 @@ def cmd_auto(args: argparse.Namespace) -> None:
 # ──────────────────────────────────────────────
 # schedule 명령 — OS 스케줄러 등록 안내
 # ──────────────────────────────────────────────
+
+
+def _parse_times(raw: str) -> list[tuple[int, int]]:
+    """"07:30,20:00" 형태의 문자열을 (시, 분) 튜플 목록으로 파싱합니다."""
+    slots: list[tuple[int, int]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            h_str, m_str = part.split(":")
+            h, m = int(h_str), int(m_str)
+        except ValueError:
+            console.print(f"[bold red]❌ 시간 형식이 잘못됐습니다: {part!r} (예: 07:30)[/]")
+            sys.exit(1)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            console.print(f"[bold red]❌ 유효하지 않은 시각입니다: {part!r}[/]")
+            sys.exit(1)
+        slots.append((h, m))
+    if not slots:
+        console.print("[bold red]❌ --times에 유효한 시각이 없습니다.[/]")
+        sys.exit(1)
+    return slots
 
 
 def cmd_schedule(args: argparse.Namespace) -> None:
@@ -421,6 +467,8 @@ def cmd_schedule(args: argparse.Namespace) -> None:
         auto_args.extend(["--method", args.method])
     if args.category:
         auto_args.extend(["--category", args.category])
+    elif args.pillar:
+        auto_args.extend(["--pillar", args.pillar])
 
     auto_cmd = " ".join([python_bin, *auto_args])
     log_path = project_root / "xp-auto.log"
@@ -455,6 +503,41 @@ def cmd_schedule(args: argparse.Namespace) -> None:
                 f"관리자 권한 PowerShell/CMD에서 아래 명령을 실행하세요:\n\n"
                 f"[green]{schtasks_cmd}[/]\n",
                 title="🕒 Windows 작업 스케줄러 — 매시간 + 랜덤 지연",
+                border_style="cyan",
+            )
+        )
+    elif args.times:
+        slots = _parse_times(args.times)
+        cron_lines = [
+            f'{m} {h} * * * cd "{project_root}" && {auto_cmd} >> "{log_path}" 2>&1'
+            for h, m in slots
+        ]
+        slot_str = ", ".join(f"{h:02d}:{m:02d}" for h, m in slots)
+
+        console.print(
+            Panel(
+                f"[bold]하루 {len(slots)}회 고정 슬롯({slot_str})에 자동 실행하려면 "
+                f"아래 crontab 항목을 모두 추가하세요.[/]\n\n"
+                f"1) 편집기 열기: [cyan]crontab -e[/]\n"
+                f"2) 아래 줄들을 추가:\n\n"
+                + "\n".join(f"[green]{line}[/]" for line in cron_lines)
+                + "\n",
+                title="🕒 cron (macOS/Linux) — 고정 슬롯",
+                border_style="cyan",
+            )
+        )
+
+        schtasks_cmds = [
+            f'schtasks /create /tn "XP AutoPost {i}" /tr "{auto_cmd}" '
+            f'/sc daily /st {h:02d}:{m:02d}'
+            for i, (h, m) in enumerate(slots, 1)
+        ]
+        console.print(
+            Panel(
+                f"관리자 권한 PowerShell/CMD에서 아래 명령을 모두 실행하세요:\n\n"
+                + "\n".join(f"[green]{c}[/]" for c in schtasks_cmds)
+                + "\n",
+                title="🕒 Windows 작업 스케줄러 — 고정 슬롯",
                 border_style="cyan",
             )
         )
@@ -559,8 +642,8 @@ def _post_content(config, content, images, method: str):
 
     method:
         api     - X API (tweepy)
-        browser - DrissionPage 브라우저 자동화 (비상용)
-        auto    - API 먼저 시도, 실패 시 브라우저로 폴백
+        browser - DrissionPage 브라우저 자동화
+        auto    - 브라우저 먼저 시도, 실패 시 API로 폴백
     """
     def _api():
         if config.xapi is None:
@@ -581,14 +664,14 @@ def _post_content(config, content, images, method: str):
     if method == "api":
         return _api()
 
-    # auto: API 먼저, 실패하면 브라우저로 폴백
+    # auto: 브라우저 먼저, 실패하면 API로 폴백
     try:
-        return _api()
+        return _browser()
     except Exception as exc:  # noqa: BLE001
         console.print(
-            f"[yellow]⚠️  API 게시 실패({exc}). 브라우저 비상 경로로 폴백합니다...[/]"
+            f"[yellow]⚠️  브라우저 게시 실패({exc}). API 경로로 폴백합니다...[/]"
         )
-        return _browser()
+        return _api()
 
 
 def cmd_post(args: argparse.Namespace) -> None:
@@ -840,8 +923,10 @@ def _print_result(output: ProjectOutput) -> None:
     content = output.content
 
     console.print()
+    pillar_line = f"[bold]니치:[/] {content.pillar}\n" if content.pillar else ""
     console.print(
         Panel(
+            f"{pillar_line}"
             f"[bold]주제:[/] {content.topic}\n"
             f"[bold]유형:[/] {content.post_type.value}\n"
             f"[bold]모델:[/] {content.model_used}\n"
@@ -965,7 +1050,7 @@ def main() -> None:
         "--method",
         choices=["api", "browser", "auto"],
         default="api",
-        help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
+        help="게시 방식: api(기본) / browser / auto(브라우저 먼저, 실패 시 API 폴백)",
     )
     p_gen.set_defaults(func=cmd_generate)
 
@@ -991,7 +1076,7 @@ def main() -> None:
         "--method",
         choices=["api", "browser", "auto"],
         default="api",
-        help="게시 방식: api(기본) / browser(비상) / auto(폴백)",
+        help="게시 방식: api(기본) / browser / auto(브라우저 먼저, 실패 시 API 폴백)",
     )
     p_col.add_argument(
         "--keep",
@@ -1009,6 +1094,11 @@ def main() -> None:
     )
     p_topics.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
     p_topics.add_argument(
+        "--pillar",
+        choices=[p.key for p in PILLARS],
+        help="니치 축으로 미리보기 (A/B/C, --category와 동시 사용 시 --category 우선)",
+    )
+    p_topics.add_argument(
         "--avoid-recent",
         type=int,
         default=20,
@@ -1020,7 +1110,15 @@ def main() -> None:
     p_auto = subparsers.add_parser(
         "auto", help="주제 자동 선정 -> 생성(+업로드/게시), 스케줄러에서 실행용"
     )
-    p_auto.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
+    p_auto.add_argument(
+        "--category",
+        help="주제 분야를 직접 지정 (기본: 미지정 시 3개 니치 축 중 가중치 기반 자동 선택)",
+    )
+    p_auto.add_argument(
+        "--pillar",
+        choices=[p.key for p in PILLARS],
+        help="니치 축을 강제 지정 (A/B/C). --category와 함께 쓰면 --category가 우선",
+    )
     p_auto.add_argument(
         "--avoid-recent",
         type=int,
@@ -1046,7 +1144,7 @@ def main() -> None:
         "--method",
         choices=["api", "browser", "auto"],
         default="api",
-        help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
+        help="게시 방식: api(기본) / browser / auto(브라우저 먼저, 실패 시 API 폴백)",
     )
     p_auto.set_defaults(func=cmd_auto)
 
@@ -1069,7 +1167,19 @@ def main() -> None:
         default=50,
         help="--every-hour 사용 시, 정각 이후 0~N분 사이 무작위 지연 (기본: 50)",
     )
+    p_sched.add_argument(
+        "--times",
+        help=(
+            '하루 여러 회 고정 슬롯 실행, 쉼표로 구분 (예: "07:30,20:00"). '
+            "지정 시 --hour/--minute보다 우선 (단 --every-hour와 함께 쓰면 --every-hour가 우선)"
+        ),
+    )
     p_sched.add_argument("--category", help="주제 분야 (예: AI, 경제, 스포츠)")
+    p_sched.add_argument(
+        "--pillar",
+        choices=[p.key for p in PILLARS],
+        help="니치 축을 강제 지정 (A/B/C). 미지정 시 실행마다 가중치 기반 자동 선택",
+    )
     p_sched.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive 업로드도 포함"
     )
@@ -1100,7 +1210,7 @@ def main() -> None:
         "--method",
         choices=["api", "browser", "auto"],
         default="api",
-        help="게시 방식: api(기본) / browser(비상) / auto(API 실패 시 브라우저 폴백)",
+        help="게시 방식: api(기본) / browser / auto(브라우저 먼저, 실패 시 API 폴백)",
     )
     p_post.set_defaults(func=cmd_post)
 

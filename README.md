@@ -195,9 +195,31 @@ python -m xp auto
 python -m xp auto --upload --post --method auto
 ```
 
-`--type random`을 주면 단건/스레드를 무작위로 선택합니다.
-`--category`로 분야를 좁힐 수 있고, `--avoid-recent`(기본 20)로 최근 몇 개
-주제까지 중복을 피할지 조정합니다.
+`--type random`을 주면 단건 60% : 스레드 30% 비중(2:1 가중치)으로 랜덤 선택합니다.
+`--avoid-recent`(기본 20)로 최근 몇 개 주제까지 중복을 피할지 조정합니다.
+
+#### 니치 로테이션 (콘텐츠 축 고정)
+
+`--category`를 직접 주지 않으면, `xp/pillars.py`에 정의된 3개 니치 축 중
+하나를 실행마다 가중치 기반으로 자동 선택합니다. 계정 정체성을 흩뜨리지
+않으면서도 매번 같은 주제만 반복되지 않도록 하기 위함입니다.
+
+| 축 | 이름 | 상대 비중 |
+|----|------|-----------|
+| A | AI·자동화 부수입 | 4 |
+| B | 코드·개발 생산성 | 3 |
+| C | 시장·투자 인사이트 | 1.5 |
+
+```powershell
+# 특정 축으로 미리보기
+python -m xp topics --pillar A --count 5
+
+# 특정 축을 강제 지정해 생성 (기본은 미지정 -> 자동 로테이션)
+python -m xp auto --pillar B
+```
+
+`--category`를 명시하면 니치 로테이션 대신 그 값을 그대로 사용합니다.
+선택된 축과 주제는 `meta.json`의 `pillar` 필드와 `xp-posts.log`에 함께 기록됩니다.
 
 ### 스케줄링 (cron / 작업 스케줄러)
 
@@ -205,12 +227,21 @@ XP는 상주 데몬 없이, OS의 스케줄러(cron, Windows 작업 스케줄러
 `xp auto`를 주기적으로 실행하는 방식을 씁니다. `schedule` 명령은 등록할
 명령어를 안내만 하며, 실제 등록(crontab 편집 등)은 직접 수행해야 합니다.
 
+**하루 여러 회 고정 슬롯 (권장)** — 매시간 자동 발행은 스팸 신호로 읽히기
+쉬우므로, 하루 1~2회 정도의 고정 시간대로 발행량을 낮추는 쪽을 권장합니다.
+
+```powershell
+python -m xp schedule --times "07:30,20:00" --upload --post --method auto
+```
+
+**하루 한 번 고정 시각**
+
 ```powershell
 python -m xp schedule --hour 9 --minute 0 --upload --post --method auto
 ```
 
-매일 고정 시각 대신 매시간 실행하면서, 실행 시각을 매번 무작위로 흔들어
-(정각 이후 0~N분 랜덤 지연) 패턴 탐지를 피하고 싶다면 `--every-hour`를 사용하세요.
+**매시간 + 랜덤 지연** — 여전히 필요하다면(예: 실험적 고빈도 운영) 실행
+시각을 매번 무작위로 흔드는(정각 이후 0~N분 랜덤 지연) 방식도 남아 있습니다.
 
 ```powershell
 python -m xp schedule --every-hour --jitter-minutes 50 --upload --post --method auto
@@ -275,10 +306,9 @@ python -m xp post --dir "output/2026-07-29-ai-트렌드"
 python -m xp post --dir "output/2026-07-29-ai-트렌드" --no-image
 ```
 
-### 비상용 브라우저 게시 (장애 대응)
+### 브라우저 게시
 
-X API가 막히거나(레이트리밋·쿼터 소진·장애) 사용할 수 없을 때를 대비한
-폴백 경로입니다. DrissionPage로 실제 브라우저를 구동해 x.com에 게시합니다.
+DrissionPage로 실제 브라우저를 구동해 x.com에 게시하는 경로입니다.
 
 ```powershell
 pip install -e ".[browser]"
@@ -294,13 +324,20 @@ python -m xp x-browser-login
 이후 `--method`로 게시 방식을 고릅니다:
 
 ```powershell
-# API 실패 시 자동으로 브라우저로 폴백 (권장)
+# 브라우저 먼저 시도, 실패 시 API로 폴백 (기본 auto 동작, 권장)
 python -m xp post --dir "output/..." --method auto
 
-# 브라우저 강제 (비상)
+# API 강제
+python -m xp post --dir "output/..." --method api
+
+# 브라우저 강제
 python -m xp post --dir "output/..." --method browser
 ```
 
 > ⚠️ 웹 UI 자동화는 X의 DOM 변경·봇 탐지에 취약하고 X 이용약관상 권장되지
-> 않습니다. **정상 경로는 API이며, 이것은 장애 시 임시 대응용**입니다.
+> 않습니다. `--method auto`는 브라우저를 먼저 시도하되, DrissionPage 미설치나
+> 세션 만료 등으로 실패하면 API로 자동 폴백합니다.
 > `XP_BROWSER_PROFILE`(프로필 경로), `XP_BROWSER_HEADLESS=1`(헤드리스)로 조정합니다.
+> 크론에서 이 방식을 쓰려면, 실행에 사용하는 파이썬 인터프리터에 브라우저
+> 의존성(`pip install -e ".[browser]"`)이 설치돼 있어야 합니다 — 그렇지 않으면
+> 매번 브라우저 시도가 실패하고 API로만 폴백됩니다.

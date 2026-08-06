@@ -64,6 +64,9 @@ class GeneratedContent(BaseModel):
     image_prompt: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     model_used: str = ""
+    pillar: str | None = Field(
+        None, description="니치 로테이션 축 이름 (xp.pillars 참고, auto 명령에서 설정)"
+    )
 
 
 class GeneratedImage(BaseModel):
