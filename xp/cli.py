@@ -143,6 +143,7 @@ def _generate_pipeline(
     tone: str | None,
     extra: str | None,
     no_image: bool,
+    no_video: bool,
     upload: bool,
     post: bool,
     method: str,
@@ -167,6 +168,7 @@ def _generate_pipeline(
         config,
         content,
         no_image=no_image,
+        no_video=no_video,
         upload=upload,
         post=post,
         method=method,
@@ -178,11 +180,12 @@ def _finalize_output(
     content: GeneratedContent,
     *,
     no_image: bool,
+    no_video: bool = False,
     upload: bool,
     post: bool,
     method: str,
 ) -> ProjectOutput:
-    """생성된 콘텐츠에 대해 이미지·저장·업로드·게시를 수행합니다.
+    """생성된 콘텐츠에 대해 이미지·영상·저장·업로드·게시를 수행합니다.
 
     `generate`/`auto`/`column` 명령이 공유하는 후처리 파이프라인입니다.
     """
@@ -201,6 +204,22 @@ def _finalize_output(
         )
         output.images = images
 
+        # 2-1) 최종 이미지를 Grok Image-to-Video로 영상 변환
+        if images and not no_video:
+            from xp.video_generator import VideoGenerator
+
+            try:
+                vid_gen = VideoGenerator(config.xai)
+                video = vid_gen.generate_from_image(
+                    image_path=images[0].local_path,
+                    prompt=content.image_prompt,
+                    output_dir=project_dir,
+                    filename="post_video.mp4",
+                )
+                output.videos = [video]
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[bold red]❌ 영상 생성 실패(이미지로 계속 진행): {exc}[/]")
+
     # 3) 파일 저장
     _save_content_files(project_dir, output)
 
@@ -217,11 +236,11 @@ def _finalize_output(
             uploader = GDriveUploader(config.gdrive)
             output.uploads = uploader.upload_directory(project_dir)
 
-    # 5) X 게시
+    # 5) X 게시 (영상이 있으면 이미지 대신 영상을 첨부)
     if post:
-        image_paths = [] if no_image else [img.local_path for img in output.images]
+        media_paths = _select_media_paths(output, no_image=no_image)
         try:
-            output.posts = _post_content(config, content, image_paths, method)
+            output.posts = _post_content(config, content, media_paths, method)
             _log_post_result(content.topic, output.posts)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
@@ -243,6 +262,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         tone=args.tone,
         extra=args.extra,
         no_image=args.no_image,
+        no_video=args.no_video,
         upload=args.upload,
         post=args.post,
         method=args.method,
@@ -314,6 +334,7 @@ def cmd_column(args: argparse.Namespace) -> None:
             config,
             content,
             no_image=args.no_image,
+            no_video=args.no_video,
             upload=args.upload,
             post=args.post,
             method=args.method,
@@ -392,6 +413,7 @@ def cmd_auto(args: argparse.Namespace) -> None:
         tone=args.tone,
         extra=args.extra,
         no_image=args.no_image,
+        no_video=args.no_video,
         upload=args.upload,
         post=args.post,
         method=args.method,
@@ -554,6 +576,21 @@ def _collect_images(project_dir: Path) -> list[Path]:
     return sorted(images)
 
 
+def _collect_videos(project_dir: Path) -> list[Path]:
+    """프로젝트 디렉토리의 영상 파일을 정렬해 반환합니다."""
+    videos: list[Path] = []
+    for pattern in ("*.mp4", "*.mov", "*.webm"):
+        videos.extend(project_dir.glob(pattern))
+    return sorted(videos)
+
+
+def _select_media_paths(output: ProjectOutput, *, no_image: bool) -> list[Path]:
+    """게시에 첨부할 미디어를 고릅니다. 영상이 있으면 영상, 없으면 이미지를 씁니다."""
+    if output.videos:
+        return [v.local_path for v in output.videos]
+    return [] if no_image else [img.local_path for img in output.images]
+
+
 def _post_content(config, content, images, method: str):
     """지정한 방식으로 게시합니다.
 
@@ -601,10 +638,13 @@ def cmd_post(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     content = _load_content(project_dir)
-    images = [] if args.no_image else _collect_images(project_dir)
+    if args.no_image:
+        media = []
+    else:
+        media = _collect_videos(project_dir) or _collect_images(project_dir)
 
     try:
-        results = _post_content(config, content, images, args.method)
+        results = _post_content(config, content, media, args.method)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]❌ 게시 실패: {exc}[/]")
         sys.exit(1)
@@ -771,7 +811,7 @@ def cmd_article(args: argparse.Namespace) -> None:
         )
         output = _finalize_output(
             config, content,
-            no_image=args.no_image, upload=False, post=False, method="api",
+            no_image=args.no_image, no_video=True, upload=False, post=False, method="api",
         )
         _print_result(output)
 
@@ -876,6 +916,11 @@ def _print_result(output: ProjectOutput) -> None:
         for img in output.images:
             console.print(f"   📁 {img.local_path}")
 
+    if output.videos:
+        console.print(f"\n[bold green]🎬 영상 {len(output.videos)}개 생성됨[/]")
+        for vid in output.videos:
+            console.print(f"   📁 {vid.local_path}")
+
     if output.uploads:
         console.print(f"\n[bold blue]☁️  Google Drive에 {len(output.uploads)}개 업로드됨[/]")
         for u in output.uploads:
@@ -956,6 +1001,10 @@ def main() -> None:
         "--no-image", action="store_true", help="이미지 생성 생략"
     )
     p_gen.add_argument(
+        "--no-video", action="store_true",
+        help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
+    )
+    p_gen.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
     )
     p_gen.add_argument(
@@ -981,6 +1030,10 @@ def main() -> None:
     p_col.add_argument("--tone", help="글의 톤 (예: 분석적, 논쟁적)")
     p_col.add_argument("--extra", help="추가 지시 사항")
     p_col.add_argument("--no-image", action="store_true", help="헤더 이미지 생략")
+    p_col.add_argument(
+        "--no-video", action="store_true",
+        help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
+    )
     p_col.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
     )
@@ -1036,6 +1089,10 @@ def main() -> None:
     p_auto.add_argument("--tone", help="글의 톤 (예: 전문적, 유머러스)")
     p_auto.add_argument("--extra", help="추가 지시 사항")
     p_auto.add_argument("--no-image", action="store_true", help="이미지 생성 생략")
+    p_auto.add_argument(
+        "--no-video", action="store_true",
+        help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
+    )
     p_auto.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
     )
