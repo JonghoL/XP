@@ -31,6 +31,7 @@ class XAIConfig:
 
     chat_model: str = "grok-4.5"
     image_model: str = "grok-imagine-image"
+    video_model: str = "grok-imagine-video"
     base_url: str = "https://api.x.ai/v1"
     # 콘텐츠 생성 시 web_search/x_search로 최신 사실을 조사할지 여부.
     live_search: bool = True
@@ -103,6 +104,7 @@ def load_config() -> AppConfig:
     xai = XAIConfig(
         chat_model=os.getenv("XAI_CHAT_MODEL", "grok-4.5"),
         image_model=os.getenv("XAI_IMAGE_MODEL", "grok-imagine-image"),
+        video_model=os.getenv("XAI_VIDEO_MODEL", "grok-imagine-video"),
         live_search=os.getenv("XP_LIVE_SEARCH", "1").lower()
         not in ("0", "false", "no", "off"),
     )

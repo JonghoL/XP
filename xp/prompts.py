@@ -6,20 +6,22 @@ Grok API에 전달할 시스템/유저 프롬프트를 구성합니다.
 from __future__ import annotations
 
 # ──────────────────────────────────────────────
-# 이미지 스타일 정의 (신문 풍자만화)
+# 이미지 스타일 정의 (한국 웹툰 스타일)
 # ──────────────────────────────────────────────
 
 # 모든 이미지 프롬프트는 이 스타일로 렌더링되도록 정의합니다.
 # 우측 하단 워터마크(@돈버는코드)는 프롬프트가 아니라 생성 후 코드로 합성합니다
 # (이미지 모델은 정확한 글자를 못 그리므로). xp.image_generator.add_watermark 참고.
 CARTOON_STYLE = (
-    "a bold, simple and powerful single-panel editorial newspaper cartoon in a "
-    "satirical caricature style, black pen-and-ink line art with cross-hatching, "
-    "exaggerated caricatures, ONE clear central visual metaphor with strong impact "
-    "and a clean, uncluttered composition, muted newsprint halftone tones, "
-    "minimal text: at most one short punchy Korean (Hangul) word or phrase, placed "
-    "only where it adds real emphasis — absolutely no busy signage, no scattered "
-    "labels, no walls of tiny text, "
+    "a vibrant Korean webtoon (manhwa) style single-panel illustration, "
+    "clean bold digital linework, flat cel-shaded coloring with soft gradient "
+    "lighting, expressive semi-realistic character proportions, modern bright "
+    "color palette, polished digital painting in the style of popular Naver "
+    "Webtoon / Kakao Webtoon series, ONE clear central visual metaphor with "
+    "strong impact and a clean, uncluttered composition, minimal text: at most "
+    "one short punchy Korean (Hangul) word or phrase, placed only where it adds "
+    "real emphasis — absolutely no busy signage, no scattered labels, no walls "
+    "of tiny text, "
     "a wide 16:9 horizontal landscape composition that fills the frame, "
     "no empty panels, no blank boxes"
 )
@@ -51,7 +53,7 @@ SYSTEM_PROMPT_SINGLE = f"""\
 4. 이모지는 1~2개만 자연스럽게 사용합니다.
 5. 해시태그는 절대 사용하지 않습니다 (요즘 X 추세에 맞춰 태그를 넣지 않습니다).
 6. 이미지 생성을 위한 영어 프롬프트를 제공합니다.
-   - 반드시 신문 풍자만화(editorial cartoon) 스타일로 장면을 묘사합니다.
+   - 반드시 한국 웹툰(Korean webtoon) 스타일로 장면을 묘사합니다.
    - 스타일: {CARTOON_STYLE}
 
 ## 금지 사항
@@ -95,7 +97,7 @@ SYSTEM_PROMPT_THREAD = f"""\
 - 이모지는 트윗당 1~2개만 사용합니다.
 - 해시태그는 절대 사용하지 않습니다 (요즘 X 추세에 맞춰 태그를 넣지 않습니다).
 - 첫 트윗에 대한 이미지 생성 영어 프롬프트를 제공합니다.
-  - 반드시 신문 풍자만화(editorial cartoon) 스타일로 장면을 묘사합니다.
+  - 반드시 한국 웹툰(Korean webtoon) 스타일로 장면을 묘사합니다.
   - 스타일: {CARTOON_STYLE}
 
 ## 금지 사항
@@ -167,7 +169,7 @@ SYSTEM_PROMPT_COLUMN = f"""\
 - 해시태그·URL·각주·출처표기는 본문에 넣지 않습니다.
 
 ## 이미지
-- 칼럼 헤더용 영어 이미지 프롬프트를 제공합니다. 반드시 신문 풍자만화(editorial cartoon) 스타일:
+- 칼럼 헤더용 영어 이미지 프롬프트를 제공합니다. 반드시 한국 웹툰(Korean webtoon) 스타일:
   {CARTOON_STYLE}
 
 ## 출력 형식 (반드시 아래 JSON만 출력)
@@ -258,7 +260,7 @@ IMAGE_PROMPT_ENHANCER = f"""\
 원본 프롬프트: {{original_prompt}}
 
 ## 보강 규칙
-- 신문 풍자만화(editorial cartoon) 스타일을 유지합니다: {CARTOON_STYLE}
+- 한국 웹툰(Korean webtoon) 스타일을 유지합니다: {CARTOON_STYLE}
 - 16:9 비율에 적합한 단일 패널 구도를 지시합니다.
 - 이미지 안에 텍스트/글자가 없도록 지시합니다.
 - 풍자의 핵심 메시지가 시각적 은유로 드러나도록 지시합니다.

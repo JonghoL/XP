@@ -10,6 +10,7 @@ tweepy로 X API에 트윗을 게시합니다.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from rich.console import Console
@@ -19,8 +20,10 @@ from xp.models import GeneratedContent, PostResult, PostType
 
 console = Console()
 
-# X는 트윗당 이미지 최대 4장까지 첨부 가능합니다.
+# X는 트윗당 이미지 최대 4장까지 첨부 가능합니다 (영상은 1개만 첨부 가능).
 MAX_MEDIA_PER_TWEET = 4
+
+VIDEO_SUFFIXES = {".mp4", ".mov", ".webm"}
 
 
 class XPoster:
@@ -116,17 +119,44 @@ class XPoster:
             media_ids=list(media_ids or []),
         )
 
-    def _upload_media(self, image_paths: list[Path]) -> list[str]:
-        """이미지를 업로드하고 media_id 리스트를 반환합니다."""
+    def _upload_media(self, media_paths: list[Path]) -> list[str]:
+        """이미지/영상을 업로드하고 media_id 리스트를 반환합니다."""
         media_ids: list[str] = []
-        for path in image_paths:
+        for path in media_paths:
             if not path.exists():
-                console.print(f"[yellow]⚠️  이미지 없음, 건너뜀: {path}[/]")
+                console.print(f"[yellow]⚠️  미디어 없음, 건너뜀: {path}[/]")
                 continue
-            media = self._api_v1().media_upload(filename=str(path))
+
+            if path.suffix.lower() in VIDEO_SUFFIXES:
+                media = self._api_v1().media_upload(
+                    filename=str(path), chunked=True, media_category="tweet_video"
+                )
+                self._wait_for_video_processing(media.media_id)
+                console.print(f"   🎬 영상 업로드: {path.name}")
+            else:
+                media = self._api_v1().media_upload(filename=str(path))
+                console.print(f"   🖼️  이미지 업로드: {path.name}")
+
             media_ids.append(str(media.media_id))
-            console.print(f"   🖼️  이미지 업로드: {path.name}")
         return media_ids
+
+    def _wait_for_video_processing(
+        self, media_id, *, timeout: int = 300, poll_interval: int = 3
+    ) -> None:
+        """영상 업로드 후 X 서버 측 비동기 처리(트랜스코딩)가 끝날 때까지 대기합니다."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = self._api_v1().get_media_upload_status(media_id)
+            info = getattr(status, "processing_info", None)
+            if not info:
+                return
+            state = info.get("state")
+            if state == "succeeded":
+                return
+            if state == "failed":
+                raise RuntimeError(f"영상 처리 실패: {info.get('error', info)}")
+            time.sleep(info.get("check_after_secs") or poll_interval)
+        raise RuntimeError(f"영상 처리 대기 시간 초과 ({timeout}초): media_id={media_id}")
 
     # ── tweepy 클라이언트 (지연 초기화) ──
 

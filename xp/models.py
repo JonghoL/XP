@@ -78,6 +78,16 @@ class GeneratedImage(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+class GeneratedVideo(BaseModel):
+    """Grok Image-to-Video로 생성된 영상 메타데이터."""
+
+    prompt: str
+    local_path: Path
+    source_image: Path | None = None
+    model_used: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
 class UploadResult(BaseModel):
     """Google Drive 업로드 결과."""
 
@@ -103,5 +113,6 @@ class ProjectOutput(BaseModel):
     project_dir: Path
     content: GeneratedContent
     images: list[GeneratedImage] = Field(default_factory=list)
+    videos: list[GeneratedVideo] = Field(default_factory=list)
     uploads: list[UploadResult] = Field(default_factory=list)
     posts: list[PostResult] = Field(default_factory=list)

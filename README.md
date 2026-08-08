@@ -1,7 +1,8 @@
 # XP — X 포스팅 자동화
 
-Grok API(xAI)를 활용하여 X(Twitter) 포스팅용 글과 이미지를 자동 생성하고,
-Google Drive에 업로드한 뒤, 최종적으로 X API를 통해 자동 포스팅하는 파이프라인입니다.
+Grok API(xAI)를 활용하여 X(Twitter) 포스팅용 글과 한국 웹툰 스타일 이미지를 자동
+생성하고, 그 이미지를 Grok Image-to-Video로 짧은 영상으로 변환한 뒤, Google Drive에
+업로드하고, 최종적으로 X API를 통해 자동 포스팅(영상 첨부)하는 파이프라인입니다.
 
 ## 요구 사항
 
@@ -41,15 +42,20 @@ copy .env.example .env
 |------|------|
 | `XAI_CHAT_MODEL` | 텍스트 생성 모델 (기본: `grok-4.5`) |
 | `XAI_IMAGE_MODEL` | 이미지 생성 모델 (기본: `grok-imagine-image`) |
+| `XAI_VIDEO_MODEL` | 이미지→영상 변환 모델 (기본: `grok-imagine-video`) |
 | `GOOGLE_SA_KEY_PATH` | Google Service Account JSON 경로 |
 | `GDRIVE_FOLDER_ID` | Google Drive 대상 폴더 ID |
 
 ## 사용법
 
-### 글 + 이미지 생성
+### 글 + 이미지 + 영상 생성
+
+기본적으로 이미지 생성 후, 그 이미지를 입력으로 Grok Image-to-Video를 호출해
+짧은 영상(`post_video.mp4`)까지 만듭니다. `--post`로 바로 게시하면 이미지 대신
+이 영상이 첨부됩니다.
 
 ```powershell
-# 단건 트윗
+# 단건 트윗 (이미지 → 영상까지 자동 생성)
 python -m xp generate --topic "AI 트렌드" --type single
 
 # 스레드 트윗
@@ -58,10 +64,13 @@ python -m xp generate --topic "2026 AI 트렌드 총정리" --type thread --keyw
 # 이미지 없이 글만
 python -m xp generate --topic "AI 트렌드" --no-image
 
-# 글 + 이미지 + Google Drive 업로드
+# 이미지는 만들되 영상 변환은 생략
+python -m xp generate --topic "AI 트렌드" --no-video
+
+# 글 + 이미지/영상 + Google Drive 업로드
 python -m xp generate --topic "AI 트렌드" --type single --upload
 
-# 생성부터 X 게시까지 원스텝 (--post)
+# 생성부터 X 게시까지 원스텝 (--post, 영상이 있으면 영상으로 게시)
 python -m xp generate --topic "AI 트렌드" --type single --post
 ```
 
@@ -103,8 +112,11 @@ python -m xp column
 # 특정 파일만 지정 (이 경우 원본을 이동하지 않음)
 python -m xp column --file "research/서학개미.md"
 
-# 헤더 풍자만화 이미지 생략
+# 헤더 웹툰 이미지 생략
 python -m xp column --no-image
+
+# 이미지는 만들되 영상 변환은 생략
+python -m xp column --no-video
 
 # 헤드라인을 직접 지정 (생략 시 모델이 생성)
 python -m xp column --title "내가 정한 제목"
@@ -125,6 +137,7 @@ python -m xp column --keep
 | `--tone` | 글의 톤 (예: 분석적, 논쟁적) |
 | `--extra` | 추가 지시 사항 |
 | `--no-image` | 헤더 이미지 생략 |
+| `--no-video` | 이미지 → 영상 변환 생략 (이미지만 사용) |
 | `--upload`, `-u` | Google Drive 업로드 |
 | `--post`, `-p` | 작성 직후 X에 게시 |
 | `--method` | 게시 방식 `api`(기본)/`browser`/`auto` |
@@ -136,7 +149,8 @@ python -m xp column --keep
 output/2026-07-30-국장을-떠난-5조-원.../
   column.txt        ← 칼럼 전문 (헤드라인 + 본문)
   meta.json         ← 메타데이터 (post_type: column 등)
-  post_image.png    ← 헤더 풍자만화 (--no-image 아니면)
+  post_image.png    ← 헤더 웹툰 이미지 (--no-image 아니면)
+  post_video.mp4    ← 헤더 이미지를 변환한 영상 (--no-video 아니면)
 ```
 
 > ⚠️ **X Premium 필요** — 280자를 넘는 롱폼을 실제로 게시하려면 게시 계정이
@@ -269,7 +283,8 @@ output/
   2026-07-29-ai-트렌드/
     tweet.txt            ← 트윗 본문 (스레드는 thread.txt, 칼럼은 column.txt)
     meta.json            ← 메타데이터 (주제, 유형, 모델 등)
-    post_image.png       ← 생성된 이미지
+    post_image.png       ← 생성된 이미지 (한국 웹툰 스타일)
+    post_video.mp4       ← 위 이미지를 Grok Image-to-Video로 변환한 영상
 ```
 
 ## Phase 2: X 자동 포스팅
@@ -296,15 +311,21 @@ X_ACCESS_TOKEN_SECRET=...
 
 그런 다음 생성된 프로젝트 디렉토리를 게시합니다. 단건/스레드는
 `meta.json`으로 자동 판별하며, 스레드는 답글 체인으로 연결됩니다.
-디렉토리 내 이미지는 첫 트윗에 첨부됩니다.
+디렉토리에 `post_video.mp4`가 있으면 영상을, 없으면 이미지를 첫 트윗에
+첨부합니다 (영상 업로드는 X API v1.1 chunked upload를 사용합니다).
 
 ```powershell
-# 이미지 포함 게시
+# 이미지/영상 포함 게시 (영상이 있으면 영상 우선)
 python -m xp post --dir "output/2026-07-29-ai-트렌드"
 
 # 텍스트만 게시
 python -m xp post --dir "output/2026-07-29-ai-트렌드" --no-image
 ```
+
+> ℹ️ **영상 생성 API는 비공식** — `POST /v1/videos/generations`와
+> `GET /v1/videos/{request_id}`는 xAI 공식 문서(docs.x.ai)에는 없지만 실제
+> 호출로 동작을 확인해 구현했습니다(2026-08-08 기준, `xp/video_generator.py`
+> 상단 주석 참고). 비공식 엔드포인트라 추후 xAI 쪽 변경으로 깨질 수 있습니다.
 
 ### 브라우저 게시
 
