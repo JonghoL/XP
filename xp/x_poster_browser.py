@@ -376,6 +376,11 @@ class BrowserXPoster:
                 raise ValueError("스레드 콘텐츠에 thread가 없습니다.")
             texts = [t.full_text for t in content.thread.tweets]
 
+        if content.post_type in (PostType.SINGLE, PostType.THREAD):
+            reply_text = content.self_reply_text
+            if reply_text:
+                texts.append(reply_text)
+
         page = self._open_page()
         try:
             result = self._compose_and_post(page, texts, images)

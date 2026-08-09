@@ -49,14 +49,30 @@ class XPoster:
         if content.post_type in (PostType.SINGLE, PostType.COLUMN):
             if content.tweet is None:
                 raise ValueError("단건/칼럼 콘텐츠에 본문이 없습니다.")
-            result = self._post_single(content.tweet.full_text, images)
-            return [result]
+            results = [self._post_single(content.tweet.full_text, images)]
+        else:
+            if content.thread is None:
+                raise ValueError("스레드 콘텐츠에 thread가 없습니다.")
+            results = self._post_thread(
+                [t.full_text for t in content.thread.tweets], images
+            )
 
-        if content.thread is None:
-            raise ValueError("스레드 콘텐츠에 thread가 없습니다.")
-        return self._post_thread(
-            [t.full_text for t in content.thread.tweets], images
-        )
+        if content.post_type in (PostType.SINGLE, PostType.THREAD):
+            self._post_self_reply(content, results)
+
+        return results
+
+    def _post_self_reply(
+        self, content: GeneratedContent, results: list[PostResult]
+    ) -> None:
+        """출처 링크(+코멘트)를 마지막 트윗의 답글로 게시합니다."""
+        reply_text = content.self_reply_text
+        if not reply_text or not results:
+            return
+        console.print("[bold cyan]💬 셀프 댓글(출처) 게시 중...[/]")
+        reply = self._create_tweet(reply_text, in_reply_to=results[-1].tweet_id)
+        console.print(f"[bold green]✅ 셀프 댓글 게시 완료:[/] {reply.url}")
+        results.append(reply)
 
     # ──────────────────────────────────────────
     # 내부 메서드

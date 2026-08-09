@@ -99,6 +99,74 @@ class TestPostThread:
         assert calls[2].kwargs["in_reply_to_tweet_id"] == "2"
 
 
+class TestSelfReply:
+    def test_single_posts_self_reply_with_source(self, xapi_config):
+        content = GeneratedContent(
+            post_type=PostType.SINGLE,
+            topic="t",
+            tweet=GeneratedTweet(text="hello"),
+            source_url="https://example.com/article",
+            self_comment="이건 이 기사 얘기입니다.",
+        )
+        v2 = _fake_v2([123, 456])
+        poster = XPoster(xapi_config)
+        with patch.object(poster, "_client_v2", return_value=v2):
+            results = poster.post_content(content, [])
+
+        assert len(results) == 2
+        assert results[1].tweet_id == "456"
+        calls = v2.create_tweet.call_args_list
+        assert calls[1].kwargs["in_reply_to_tweet_id"] == "123"
+        assert "https://example.com/article" in calls[1].kwargs["text"]
+        assert "이건 이 기사 얘기입니다." in calls[1].kwargs["text"]
+
+    def test_thread_self_reply_chains_to_last_tweet(self, xapi_config):
+        content = GeneratedContent(
+            post_type=PostType.THREAD,
+            topic="t",
+            thread=GeneratedThread(
+                topic="t", tweets=[GeneratedTweet(text="one"), GeneratedTweet(text="two")]
+            ),
+            source_url="https://example.com/src",
+        )
+        v2 = _fake_v2([1, 2, 3])
+        poster = XPoster(xapi_config)
+        with patch.object(poster, "_client_v2", return_value=v2):
+            results = poster.post_content(content, [])
+
+        assert len(results) == 3
+        assert v2.create_tweet.call_args_list[2].kwargs["in_reply_to_tweet_id"] == "2"
+
+    def test_no_self_reply_without_source(self, xapi_config):
+        content = GeneratedContent(
+            post_type=PostType.SINGLE,
+            topic="t",
+            tweet=GeneratedTweet(text="hello"),
+        )
+        v2 = _fake_v2([123])
+        poster = XPoster(xapi_config)
+        with patch.object(poster, "_client_v2", return_value=v2):
+            results = poster.post_content(content, [])
+
+        assert len(results) == 1
+
+    def test_column_ignores_self_reply(self, xapi_config):
+        long_text = "제목\n\n" + ("본문 " * 100)
+        content = GeneratedContent(
+            post_type=PostType.COLUMN,
+            topic="칼럼",
+            tweet=GeneratedTweet(text=long_text),
+            source_url="https://example.com/src",
+            self_comment="코멘트",
+        )
+        v2 = _fake_v2([777])
+        poster = XPoster(xapi_config)
+        with patch.object(poster, "_client_v2", return_value=v2):
+            results = poster.post_content(content, [])
+
+        assert len(results) == 1
+
+
 class TestMediaUpload:
     def test_single_uploads_image(self, xapi_config, tmp_path):
         img = tmp_path / "post_image.png"

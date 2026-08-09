@@ -46,6 +46,12 @@ SYSTEM_PROMPT_SINGLE = f"""\
 - 막연한 evergreen(언제 써도 맞는 뻔한 말)은 금지합니다.
 - 단, 트윗 본문에는 URL·출처표기([1] 등)·각주를 넣지 않습니다. 자연스러운 사람 말투를 유지합니다.
 
+## 셀프 답글 (출처)
+- 유저 프롬프트에 "참고 출처" URL이 주어지면, 게시 직후 셀프 답글로 달 짧은
+  코멘트를 `self_comment`에 작성합니다. 그 링크를 자연스럽게 소개/보충하는
+  1~2문장이며, URL 자체는 쓰지 않습니다(URL은 코드가 따로 붙입니다).
+- "참고 출처"가 주어지지 않았으면 `self_comment`는 null로 둡니다.
+
 ## 작성 규칙
 1. 첫 줄에서 시선을 사로잡습니다 (놀람, 반전, 질문).
 2. 핵심 메시지를 간결하게 전달합니다.
@@ -67,7 +73,8 @@ SYSTEM_PROMPT_SINGLE = f"""\
 ```json
 {{
   "text": "트윗 본문 (280자 이내, 해시태그 없음)",
-  "image_prompt": "An English prompt describing the scene as {CARTOON_STYLE}"
+  "image_prompt": "An English prompt describing the scene as {CARTOON_STYLE}",
+  "self_comment": "출처 링크를 소개하는 1~2문장 (참고 출처가 없으면 null)"
 }}
 ```
 """
@@ -85,6 +92,13 @@ SYSTEM_PROMPT_THREAD = f"""\
 - 최근의 수치·사건·발표·통계 등 '지금'의 사실과, 현재 X에서 사람들이 실제로 나누는 반응/여론을 파악합니다.
 - 각 트윗을 조사한 최신 사실에 근거해 구체적으로 씁니다. 막연한 evergreen은 금지합니다.
 - 단, 트윗 본문에는 URL·출처표기·각주를 넣지 않습니다. 자연스러운 사람 말투를 유지합니다.
+
+## 셀프 답글 (출처)
+- 유저 프롬프트에 "참고 출처" URL이 주어지면, 스레드 게시 직후 마지막 트윗에
+  이어 달 셀프 답글용 짧은 코멘트를 `self_comment`에 작성합니다. 그 링크를
+  자연스럽게 소개/보충하는 1~2문장이며, URL 자체는 쓰지 않습니다(URL은 코드가
+  따로 붙입니다).
+- "참고 출처"가 주어지지 않았으면 `self_comment`는 null로 둡니다.
 
 ## 스레드 구조
 1. **Hook (첫 번째 트윗)**: 강렬한 시작으로 스레드를 읽게 만듭니다.
@@ -116,7 +130,8 @@ SYSTEM_PROMPT_THREAD = f"""\
       "text": "두 번째 트윗 본문 (해시태그 없음)",
       "image_prompt": null
     }}
-  ]
+  ],
+  "self_comment": "출처 링크를 소개하는 1~2문장 (참고 출처가 없으면 null)"
 }}
 ```
 """
@@ -216,6 +231,10 @@ SYSTEM_PROMPT_TOPICS = """\
 - "AI 트렌드", "오늘의 이슈"처럼 막연한 주제가 아니라, 트윗 하나로 바로 쓸 수 있을 만큼
   구체적인 주제(특정 사건·발표·인물·수치를 포함)로 제안합니다.
 - 이미 다룬 주제(아래 "제외할 주제" 목록)와 겹치지 않는 새로운 주제를 제안합니다.
+- 각 주제마다, 검색으로 찾은 근거 기사·포스트 중 가장 핵심적인 것의 실제 URL을
+  `source_url`에 넣습니다. 나중에 게시물에 셀프 답글로 출처를 달기 위한 용도이므로,
+  실제로 검색해 확인한 URL만 넣고 지어내지 않습니다. 근거가 명확한 단일 출처가
+  없으면 null로 둡니다.
 
 ## 출력 형식 (반드시 아래 JSON 형식으로 출력)
 ```json
@@ -224,7 +243,8 @@ SYSTEM_PROMPT_TOPICS = """\
     {
       "topic": "구체적인 주제 한 줄",
       "keywords": ["관련", "키워드"],
-      "reason": "왜 지금 이 주제가 화제가 될지 한 줄 설명"
+      "reason": "왜 지금 이 주제가 화제가 될지 한 줄 설명",
+      "source_url": "가장 핵심적인 근거 기사/포스트의 실제 URL (없으면 null)"
     }
   ]
 }
@@ -274,6 +294,7 @@ def build_user_prompt(
     keywords: list[str] | None = None,
     tone: str | None = None,
     extra_instructions: str | None = None,
+    source_url: str | None = None,
 ) -> str:
     """유저 프롬프트를 구성합니다."""
     parts = [f"주제: {topic}"]
@@ -286,5 +307,11 @@ def build_user_prompt(
 
     if extra_instructions:
         parts.append(f"추가 지시: {extra_instructions}")
+
+    if source_url:
+        parts.append(
+            f"참고 출처: {source_url} (self_comment에 이 출처를 소개하는 "
+            "1~2문장을 작성하세요. URL 자체는 쓰지 마세요.)"
+        )
 
     return "\n".join(parts)

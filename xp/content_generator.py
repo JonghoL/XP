@@ -47,9 +47,10 @@ class ContentGenerator:
         keywords: list[str] | None = None,
         tone: str | None = None,
         extra: str | None = None,
+        source_url: str | None = None,
     ) -> GeneratedContent:
         """단건 트윗을 생성합니다."""
-        user_prompt = build_user_prompt(topic, keywords, tone, extra)
+        user_prompt = build_user_prompt(topic, keywords, tone, extra, source_url)
 
         console.print("[bold cyan]🔄 최신 정보 검색 + 단건 트윗 생성 중...[/]")
         raw = call_chat(self._config, SYSTEM_PROMPT_SINGLE, user_prompt)
@@ -68,6 +69,8 @@ class ContentGenerator:
             tweet=tweet,
             image_prompt=tweet.image_prompt,
             model_used=self._config.chat_model,
+            source_url=source_url,
+            self_comment=data.get("self_comment"),
         )
 
         console.print(f"[bold green]✅ 트윗 생성 완료[/] ({len(tweet.text)}자)")
@@ -120,9 +123,10 @@ class ContentGenerator:
         keywords: list[str] | None = None,
         tone: str | None = None,
         extra: str | None = None,
+        source_url: str | None = None,
     ) -> GeneratedContent:
         """스레드 트윗을 생성합니다."""
-        user_prompt = build_user_prompt(topic, keywords, tone, extra)
+        user_prompt = build_user_prompt(topic, keywords, tone, extra, source_url)
 
         console.print("[bold cyan]🔄 최신 정보 검색 + 스레드 생성 중...[/]")
         raw = call_chat(self._config, SYSTEM_PROMPT_THREAD, user_prompt)
@@ -147,6 +151,8 @@ class ContentGenerator:
             thread=thread,
             image_prompt=image_prompt,
             model_used=self._config.chat_model,
+            source_url=source_url,
+            self_comment=data.get("self_comment"),
         )
 
         console.print(
