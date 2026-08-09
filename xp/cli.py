@@ -146,6 +146,7 @@ def _generate_pipeline(
     upload: bool,
     post: bool,
     method: str,
+    source_url: str | None = None,
 ) -> ProjectOutput:
     """주제 하나에 대해 생성 -> (선택)업로드/게시까지 수행합니다.
 
@@ -156,11 +157,13 @@ def _generate_pipeline(
 
     if post_type == PostType.SINGLE:
         content = gen.generate_single(
-            topic=topic, keywords=keywords, tone=tone, extra=extra
+            topic=topic, keywords=keywords, tone=tone, extra=extra,
+            source_url=source_url,
         )
     else:
         content = gen.generate_thread(
-            topic=topic, keywords=keywords, tone=tone, extra=extra
+            topic=topic, keywords=keywords, tone=tone, extra=extra,
+            source_url=source_url,
         )
 
     return _finalize_output(
@@ -350,9 +353,10 @@ def cmd_topics(args: argparse.Namespace) -> None:
     table.add_column("주제", style="cyan")
     table.add_column("키워드", style="yellow")
     table.add_column("추천 이유", style="dim")
+    table.add_column("출처", style="green")
 
     for t in topics:
-        table.add_row(t.topic, ", ".join(t.keywords), t.reason or "-")
+        table.add_row(t.topic, ", ".join(t.keywords), t.reason or "-", t.source_url or "-")
 
     console.print(table)
 
@@ -395,6 +399,7 @@ def cmd_auto(args: argparse.Namespace) -> None:
         upload=args.upload,
         post=args.post,
         method=args.method,
+        source_url=chosen.source_url,
     )
 
     _print_result(output)

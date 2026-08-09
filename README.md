@@ -199,6 +199,13 @@ python -m xp auto --upload --post --method auto
 `--category`로 분야를 좁힐 수 있고, `--avoid-recent`(기본 20)로 최근 몇 개
 주제까지 중복을 피할지 조정합니다.
 
+**셀프 댓글(출처)** — `topics`/`auto`는 Grok이 web_search·x_search로 주제를
+조사하면서 근거가 된 출처 URL(`source_url`)도 함께 받아옵니다. 단건/스레드
+게시(`--post`) 시 출처가 있으면, 본문 게시 직후 그 링크를 소개하는 짧은
+코멘트(Grok이 1~2문장 생성)와 함께 **자신의 게시물에 셀프 답글**을 자동으로
+답니다(트윗 본문에는 URL을 넣지 않는 기존 원칙 유지). 칼럼/아티클에는 적용되지
+않습니다.
+
 ### 스케줄링 (cron / 작업 스케줄러)
 
 XP는 상주 데몬 없이, OS의 스케줄러(cron, Windows 작업 스케줄러)가

@@ -51,6 +51,9 @@ class SuggestedTopic(BaseModel):
     topic: str = Field(..., description="제안된 주제")
     keywords: list[str] = Field(default_factory=list, description="관련 키워드")
     reason: str | None = Field(None, description="이 주제를 추천하는 이유")
+    source_url: str | None = Field(
+        None, description="주제의 근거가 된 기사/포스트 출처 URL"
+    )
 
 
 class GeneratedContent(BaseModel):
@@ -64,6 +67,23 @@ class GeneratedContent(BaseModel):
     image_prompt: str | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     model_used: str = ""
+    source_url: str | None = Field(
+        None, description="게시 후 셀프 답글로 달 출처 URL"
+    )
+    self_comment: str | None = Field(
+        None, description="출처를 소개하는 짧은 셀프 답글 코멘트 (URL 제외)"
+    )
+
+    @property
+    def self_reply_text(self) -> str | None:
+        """출처 링크 + 코멘트로 구성된 셀프 답글 본문 (달 게 없으면 None)."""
+        comment = (self.self_comment or "").strip()
+        url = (self.source_url or "").strip()
+        if not comment and not url:
+            return None
+        if comment and url:
+            return f"{comment}\n\n{url}"
+        return comment or url
 
 
 class GeneratedImage(BaseModel):
