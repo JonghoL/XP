@@ -679,7 +679,7 @@ def _select_media_paths(output: ProjectOutput, *, no_image: bool) -> list[Path]:
     return [] if no_image else [img.local_path for img in output.images]
 
 
-def _post_content(config, content, images, method: str):
+def _post_content(config, content, images, method: str, debug_dir=None):
     """지정한 방식으로 게시합니다.
 
     method:
@@ -699,7 +699,7 @@ def _post_content(config, content, images, method: str):
     def _browser():
         from xp.x_poster_browser import BrowserXPoster
 
-        return BrowserXPoster().post_content(content, images)
+        return BrowserXPoster().post_content(content, images, debug_dir=debug_dir)
 
     if method == "browser":
         return _browser()
@@ -732,7 +732,7 @@ def cmd_post(args: argparse.Namespace) -> None:
         media = _collect_videos(project_dir) or _collect_images(project_dir)
 
     try:
-        results = _post_content(config, content, media, args.method)
+        results = _post_content(config, content, media, args.method, debug_dir=project_dir)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[bold red]❌ 게시 실패: {exc}[/]")
         sys.exit(1)
