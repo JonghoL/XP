@@ -31,8 +31,11 @@ def _fake_page():
     def ele(selector, timeout=None):
         if "toast" in selector:
             return toast
-        # 그 외 모든 셀렉터(작성창/파일입력/버튼)는 존재하는 요소로 취급
-        return MagicMock()
+        # 그 외 모든 셀렉터(작성창/파일입력/버튼)는 활성 상태의 요소로 취급
+        el = MagicMock()
+        el.attr.return_value = None
+        el.run_js.return_value = 10_000  # 본문 입력 길이 체크를 항상 통과시킴
+        return el
 
     page.ele.side_effect = ele
     return page

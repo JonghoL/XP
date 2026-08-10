@@ -184,6 +184,35 @@ class BrowserXPoster:
         """
         el.run_js(js, text)
 
+    def _fill_tweet_box(self, el, text: str) -> None:  # noqa: ANN001
+        """트윗 작성창(리치텍스트 에디터)에 본문을 채웁니다.
+
+        DrissionPage의 문자 단위 .input()은 이 에디터(Draft.js 기반)에서
+        React 상태 갱신과 경합해 일부 줄이 지워지거나 마지막 줄만 남는 등
+        불안정하다(실측: 여러 줄 본문이 마지막 줄만 게시된 사례). 아티클
+        본문과 동일하게 paste 이벤트로 한 번에 주입해 이 문제를 피한다.
+        입력 후 에디터 글자 수를 원문과 대조해 누락을 감지하면 한 번 재시도한다.
+        """
+        el.click()
+        time.sleep(0.3)
+        for attempt in range(2):
+            self._draftjs_paste(el, text)
+            time.sleep(1.0)
+            try:
+                length = int(el.run_js("return (this.innerText||'').length") or 0)
+            except Exception:  # noqa: BLE001
+                length = len(text)  # 길이 확인 불가 시 통과시킨다.
+            if length >= len(text) * 0.9:
+                return
+            console.print(
+                f"[yellow]   ⚠️ 본문 입력이 불완전합니다(에디터 {length}자 / "
+                f"원문 {len(text)}자). 재시도...[/]"
+            )
+        raise RuntimeError(
+            f"트윗 본문 입력이 불완전합니다(원문 {len(text)}자, 입력 후 {length}자). "
+            "게시를 중단합니다."
+        )
+
     @staticmethod
     def _wait_enabled(page, selector: str, timeout: int = 20):  # noqa: ANN001, ANN205
         """버튼이 나타나 '활성' 상태가 될 때까지 기다려 반환합니다(없으면 None)."""
@@ -363,6 +392,8 @@ class BrowserXPoster:
         self,
         content: GeneratedContent,
         image_paths: list[Path] | None = None,
+        *,
+        debug_dir: str | Path | None = None,
     ) -> list[PostResult]:
         """콘텐츠 유형에 맞춰 브라우저로 트윗/스레드를 게시합니다."""
         images = image_paths or []
@@ -383,7 +414,7 @@ class BrowserXPoster:
 
         page = self._open_page()
         try:
-            result = self._compose_and_post(page, texts, images)
+            result = self._compose_and_post(page, texts, images, debug_dir=debug_dir)
         finally:
             page.quit()
         return [result]
@@ -392,8 +423,15 @@ class BrowserXPoster:
     # 내부: 작성 및 게시
     # ──────────────────────────────────────────
 
+    _VIDEO_EXTS = (".mp4", ".mov", ".webm", ".m4v")
+
     def _compose_and_post(
-        self, page, texts: list[str], image_paths: list[Path]
+        self,
+        page,
+        texts: list[str],
+        image_paths: list[Path],
+        *,
+        debug_dir: str | Path | None = None,
     ) -> PostResult:
         """컴포저에 텍스트/이미지를 채우고 게시합니다.
 
@@ -404,50 +442,108 @@ class BrowserXPoster:
 
         first_box = page.ele(SEL_TEXTAREA.format(i=0), timeout=20)
         if not first_box:
-            raise RuntimeError("트윗 작성창을 찾지 못했습니다. 로그인 세션을 확인하세요.")
-        first_box.input(texts[0])
+            dump = self._dump_debug(page, debug_dir)
+            raise RuntimeError(
+                f"트윗 작성창을 찾지 못했습니다. 로그인 세션을 확인하세요. 디버그: {dump}"
+            )
+        self._fill_tweet_box(first_box, texts[0])
 
-        # 첫 트윗에 이미지 첨부
+        # 첫 트윗에 이미지/영상 첨부
         valid = [p for p in image_paths if Path(p).exists()]
+        has_video = any(str(p).lower().endswith(self._VIDEO_EXTS) for p in valid)
         if valid:
             file_input = page.ele(SEL_FILE_INPUT, timeout=10)
             if file_input:
                 file_input.input("\n".join(str(Path(p)) for p in valid))
-                console.print(f"   🖼️  이미지 {len(valid)}장 첨부")
+                kind = "영상" if has_video else "이미지"
+                console.print(f"   🖼️  {kind} {len(valid)}개 첨부 — 업로드 대기 중...")
                 self._wait_media_ready(page)
 
         # 스레드: 나머지 트윗을 추가
         for i, text in enumerate(texts[1:], start=1):
             add_btn = page.ele(SEL_ADD_BUTTON, timeout=10)
             if not add_btn:
-                raise RuntimeError("스레드 추가 버튼을 찾지 못했습니다.")
+                dump = self._dump_debug(page, debug_dir)
+                raise RuntimeError(f"스레드 추가 버튼을 찾지 못했습니다. 디버그: {dump}")
             add_btn.click()
             box = page.ele(SEL_TEXTAREA.format(i=i), timeout=10)
             if not box:
-                raise RuntimeError(f"{i + 1}번째 작성창을 찾지 못했습니다.")
-            box.input(text)
+                dump = self._dump_debug(page, debug_dir)
+                raise RuntimeError(f"{i + 1}번째 작성창을 찾지 못했습니다. 디버그: {dump}")
+            self._fill_tweet_box(box, text)
 
-        post_btn = page.ele(SEL_POST_BUTTON, timeout=10)
+        # 미디어 업로드/처리가 끝나기 전까지 X는 게시 버튼을 비활성 상태로 둔다.
+        # 활성화될 때까지 기다리지 않고 바로 클릭하면 아무 반응 없이 게시가
+        # 누락되므로(업로드 중 "먹통"처럼 보이는 원인), 반드시 활성 대기 후 클릭한다.
+        button_timeout = (240 if has_video else 60) if valid else 20
+        post_btn = self._wait_enabled(page, SEL_POST_BUTTON, timeout=button_timeout)
         if not post_btn:
-            raise RuntimeError("게시 버튼을 찾지 못했습니다.")
-        post_btn.click()
+            dump = self._dump_debug(page, debug_dir)
+            raise RuntimeError(
+                "게시 버튼이 비활성 상태로 남아 있습니다(미디어 업로드/처리가 "
+                f"끝나지 않았을 수 있음). 디버그: {dump}"
+            )
 
-        url = self._wait_confirmation(page)
+        # 마지막 안전장치: 미디어 업로드/버튼 대기 중 리렌더링으로 본문이
+        # 유실됐을 가능성에 대비해, 클릭 직전 모든 작성창을 다시 조회해
+        # 원문과 대조한다. 유실이 확인되면 재입력을 한 번 더 시도하고,
+        # 그래도 안 맞으면 게시 없이 중단한다(빈 트윗이 올라가는 것을 방지).
+        for i, expected in enumerate(texts):
+            box = page.ele(SEL_TEXTAREA.format(i=i), timeout=10)
+            if not box:
+                dump = self._dump_debug(page, debug_dir)
+                raise RuntimeError(
+                    f"게시 직전 확인 단계에서 {i + 1}번째 작성창을 찾지 못했습니다. "
+                    f"디버그: {dump}"
+                )
+            try:
+                length = int(box.run_js("return (this.innerText||'').length") or 0)
+            except Exception:  # noqa: BLE001
+                length = len(expected)
+            if length < len(expected) * 0.9:
+                console.print(
+                    f"[yellow]   ⚠️ 게시 직전 확인: {i + 1}번째 본문 유실 감지 "
+                    f"(원문 {len(expected)}자 / 현재 {length}자). 재입력 시도...[/]"
+                )
+                self._fill_tweet_box(box, expected)
+                length = int(box.run_js("return (this.innerText||'').length") or 0)
+                if length < len(expected) * 0.9:
+                    dump = self._dump_debug(page, debug_dir)
+                    raise RuntimeError(
+                        f"{i + 1}번째 본문이 계속 유실되어 게시를 중단합니다"
+                        f"(원문 {len(expected)}자 / 현재 {length}자). 디버그: {dump}"
+                    )
+
+        post_btn.click(by_js=True)
+
+        confirm_timeout = 60 if has_video else 30
+        url = self._wait_confirmation(page, timeout=confirm_timeout, debug_dir=debug_dir)
         tweet_id = url.rstrip("/").split("/")[-1] if "/status/" in url else "unknown"
         console.print(f"[bold green]✅ 브라우저 게시 완료:[/] {url}")
         return PostResult(tweet_id=tweet_id, text=texts[0], url=url)
 
     @staticmethod
     def _wait_media_ready(page, timeout: int = 60) -> None:
-        """이미지 업로드(썸네일 렌더링)가 끝날 때까지 대기합니다."""
+        """미디어 미리보기가 컴포저에 나타날 때까지 대기합니다.
+
+        이 시점엔 업로드가 진행 중일 뿐 완료는 아니다(단순 sanity 체크).
+        실제 업로드/처리 완료 여부는 게시 버튼 활성화(`_wait_enabled`)로 판단한다.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             if page.ele('css:div[data-testid="attachments"]', timeout=1):
                 return
             time.sleep(1)
 
-    def _wait_confirmation(self, page, timeout: int = 30) -> str:
-        """게시 확인 토스트를 기다려 게시물 URL을 최대한 알아냅니다."""
+    def _wait_confirmation(
+        self, page, timeout: int = 30, debug_dir: str | Path | None = None
+    ) -> str:
+        """게시 확인 신호를 기다려 게시물 URL을 최대한 알아냅니다.
+
+        토스트가 가장 확실한 신호지만, 폴링 사이 짧게 떴다 사라지면 놓칠 수
+        있다. 그런 경우를 대비해 URL이 컴포저를 벗어났는지 / 작성창이
+        사라졌는지도 보조 신호로 함께 확인한다.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             toast = page.ele(SEL_TOAST, timeout=1)
@@ -459,5 +555,13 @@ class BrowserXPoster:
                         return href if href.startswith("http") else f"https://x.com{href}"
                 # 토스트는 떴지만 링크가 없으면 게시는 된 것으로 본다.
                 return "https://x.com/home"
-            time.sleep(1)
-        raise RuntimeError("게시 확인(토스트)을 받지 못했습니다. 실제 게시 여부를 확인하세요.")
+            cur = self._url(page)
+            if "/compose/" not in cur:
+                return cur
+            if not page.ele(SEL_TEXTAREA.format(i=0), timeout=1):
+                return "https://x.com/home"
+            time.sleep(0.5)
+        dump = self._dump_debug(page, debug_dir)
+        raise RuntimeError(
+            f"게시 확인을 받지 못했습니다. 실제 게시 여부를 직접 확인하세요. 디버그: {dump}"
+        )
