@@ -54,6 +54,11 @@ copy .env.example .env
 짧은 영상(`post_video.mp4`)까지 만듭니다. `--post`로 바로 게시하면 이미지 대신
 이 영상이 첨부됩니다.
 
+글이 완성되면 저장/업로드/게시로 넘어가기 전에 **AI향 제거** 단계를 한 번 더
+거칩니다. 사실·수치·논지는 그대로 두고, "결론적으로"·"또한" 같은 상투적 접속어,
+기계적으로 균형 잡힌 문장, 단조로운 나열체 등 AI 특유의 문체만 Grok으로 다시
+다듬습니다. 생략하려면 `--no-humanize`를 붙입니다.
+
 ```powershell
 # 단건 트윗 (이미지 → 영상까지 자동 생성)
 python -m xp generate --topic "AI 트렌드" --type single
@@ -66,6 +71,9 @@ python -m xp generate --topic "AI 트렌드" --no-image
 
 # 이미지는 만들되 영상 변환은 생략
 python -m xp generate --topic "AI 트렌드" --no-video
+
+# AI향 제거 단계 생략 (초안 문체를 그대로 사용)
+python -m xp generate --topic "AI 트렌드" --no-humanize
 
 # 글 + 이미지/영상 + Google Drive 업로드
 python -m xp generate --topic "AI 트렌드" --type single --upload
@@ -138,6 +146,7 @@ python -m xp column --keep
 | `--extra` | 추가 지시 사항 |
 | `--no-image` | 헤더 이미지 생략 |
 | `--no-video` | 이미지 → 영상 변환 생략 (이미지만 사용) |
+| `--no-humanize` | 게시 직전 AI향 제거 단계 생략 |
 | `--upload`, `-u` | Google Drive 업로드 |
 | `--post`, `-p` | 작성 직후 X에 게시 |
 | `--method` | 게시 방식 `api`(기본)/`browser`/`auto` |

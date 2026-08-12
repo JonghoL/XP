@@ -18,9 +18,11 @@ from xp.models import (
 )
 from xp.prompts import (
     SYSTEM_PROMPT_COLUMN,
+    SYSTEM_PROMPT_HUMANIZE,
     SYSTEM_PROMPT_SINGLE,
     SYSTEM_PROMPT_THREAD,
     build_column_user_prompt,
+    build_humanize_user_prompt,
     build_user_prompt,
 )
 from xp.xai_client import call_chat, extract_json
@@ -159,3 +161,31 @@ class ContentGenerator:
             f"[bold green]✅ 스레드 생성 완료[/] ({thread.tweet_count}개 트윗)"
         )
         return content
+
+    def humanize_texts(self, texts: list[str]) -> list[str]:
+        """생성된 문구들에서 AI 특유의 문체(AI향)를 제거해 자연스럽게 다듬습니다.
+
+        게시 직전 최종 단계에서 호출합니다. 입력 순서/개수를 그대로 유지해 반환합니다.
+        """
+        if not texts:
+            return texts
+
+        user_prompt = build_humanize_user_prompt(texts)
+
+        console.print("[bold cyan]🔄 AI향 제거 중...[/]")
+        raw = call_chat(
+            self._config,
+            SYSTEM_PROMPT_HUMANIZE,
+            user_prompt,
+            temperature=0.7,
+            use_search_tools=False,
+        )
+        data = extract_json(raw)
+        result = data.get("texts")
+        if not isinstance(result, list) or len(result) != len(texts):
+            raise RuntimeError(
+                "AI향 제거 응답 형식이 올바르지 않습니다 (항목 개수 불일치)."
+            )
+
+        console.print("[bold green]✅ AI향 제거 완료[/]")
+        return [str(t).strip() for t in result]
