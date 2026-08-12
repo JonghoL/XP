@@ -33,6 +33,144 @@ from xp.pillars import PILLARS, choose_pillar, get_pillar
 console = Console()
 
 POST_LOG_PATH = Path("xp-posts.log")
+# 브라우저 게시가 재시도 후에도 실패한 건을 다음 실행에서 다시 시도하기 위한 큐.
+# (유료 API로 폴백하지 않고 브라우저로 재도전하기 위한 저장소)
+POST_QUEUE_PATH = Path("post-queue.jsonl")
+# 큐에서 이 횟수만큼 재시도해도 실패하면 포기하고 제거한다.
+MAX_QUEUE_ATTEMPTS = 5
+
+
+def _notify(title: str, message: str) -> None:
+    """사용자에게 알림을 띄웁니다(터미널 + macOS 데스크톱 알림, best-effort)."""
+    console.print(f"[bold yellow]🔔 {title} — {message}[/]")
+    if sys.platform == "darwin":
+        import subprocess
+
+        try:
+            subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    f"display notification {json.dumps(message)} "
+                    f"with title {json.dumps(title)}",
+                ],
+                check=False,
+                timeout=5,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _enqueue_retry(
+    project_dir: Path, method: str, *, no_image: bool, reason: str
+) -> None:
+    """브라우저 게시 실패 건을 재시도 큐에 저장합니다(유료 API로 넘기지 않음)."""
+    entry = {
+        "project_dir": str(Path(project_dir).resolve()),
+        "method": method,
+        "no_image": no_image,
+        "reason": reason[:300],
+        "queued_at": datetime.now().isoformat(timespec="seconds"),
+        "attempts": 0,
+    }
+    with POST_QUEUE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    console.print(f"[yellow]↩️  재시도 큐에 저장: {entry['project_dir']}[/]")
+
+
+def _read_queue() -> list[dict]:
+    """재시도 큐를 읽어 항목 리스트로 반환합니다."""
+    if not POST_QUEUE_PATH.exists():
+        return []
+    entries: list[dict] = []
+    for line in POST_QUEUE_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return entries
+
+
+def _write_queue(entries: list[dict]) -> None:
+    """재시도 큐를 다시 씁니다(비면 파일 삭제)."""
+    if entries:
+        POST_QUEUE_PATH.write_text(
+            "\n".join(json.dumps(e, ensure_ascii=False) for e in entries) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        POST_QUEUE_PATH.unlink(missing_ok=True)
+
+
+def _drain_retry_queue(config: AppConfig) -> None:
+    """재시도 큐에 쌓인 실패 건들을 브라우저로 다시 게시합니다.
+
+    큐 재시도는 항상 브라우저 경로만 사용합니다(유료 API로 넘어가지 않음).
+    세션 만료가 확인되면 남은 건을 그대로 두고 즉시 중단한 뒤 재로그인을
+    알립니다(어차피 나머지도 다 실패하므로).
+    """
+    entries = _read_queue()
+    if not entries:
+        return
+
+    from xp.x_poster_browser import SessionExpiredError
+
+    console.print(f"[bold cyan]↩️  재시도 큐 {len(entries)}건 처리...[/]")
+    remaining: list[dict] = []
+    stopped = False
+
+    for idx, entry in enumerate(entries):
+        if stopped:
+            remaining.append(entry)
+            continue
+
+        pdir = Path(entry["project_dir"])
+        if not (pdir / "meta.json").exists():
+            console.print(f"[dim]  건너뜀(폴더 없음, 큐에서 제거): {pdir}[/]")
+            continue  # 폴더가 없으면 큐에서 조용히 제거
+
+        content = _load_content(pdir)
+        media = (
+            []
+            if entry.get("no_image")
+            else (_collect_videos(pdir) or _collect_images(pdir))
+        )
+        try:
+            posts = _post_content(config, content, media, "browser", debug_dir=pdir)
+            _log_post_result(content.topic, posts, pillar=content.pillar)
+            console.print(f"[green]  ✅ 재시도 성공: {pdir}[/]")
+        except SessionExpiredError as exc:
+            console.print(
+                f"[red]  ❌ 세션 만료 — 재시도 중단, 큐 유지: {exc}[/]"
+            )
+            _notify(
+                "XP 재시도 보류 — 재로그인 필요",
+                "브라우저 세션이 만료됐습니다. python -m xp x-browser-login 을 실행하세요.",
+            )
+            remaining.append(entry)
+            stopped = True
+        except Exception as exc:  # noqa: BLE001
+            entry["attempts"] = entry.get("attempts", 0) + 1
+            if entry["attempts"] >= MAX_QUEUE_ATTEMPTS:
+                console.print(
+                    f"[red]  ⛔ {MAX_QUEUE_ATTEMPTS}회 실패 — 큐에서 제거: "
+                    f"{pdir} ({exc})[/]"
+                )
+                _log_post_result(
+                    content.topic, None, error=f"queue_giveup: {exc}",
+                    pillar=content.pillar,
+                )
+            else:
+                console.print(
+                    f"[yellow]  ↩️ 재시도 실패({entry['attempts']}/"
+                    f"{MAX_QUEUE_ATTEMPTS}), 큐 유지: {exc}[/]"
+                )
+                remaining.append(entry)
+
+    _write_queue(remaining)
 
 
 def _log_post_result(
@@ -276,12 +414,30 @@ def _finalize_output(
 
     # 5) X 게시 (영상이 있으면 이미지 대신 영상을 첨부)
     if post:
+        from xp.x_poster_browser import SessionExpiredError
+
         media_paths = _select_media_paths(output, no_image=no_image)
         try:
-            output.posts = _post_content(config, content, media_paths, method)
+            output.posts = _post_content(
+                config, content, media_paths, method, debug_dir=project_dir
+            )
             _log_post_result(content.topic, output.posts, pillar=content.pillar)
+        except SessionExpiredError as exc:
+            # 세션 만료 — 브라우저로만 재도전하도록 큐에 저장하고 재로그인 알림.
+            console.print(f"[bold red]❌ 브라우저 세션 만료(재시도 큐에 저장): {exc}[/]")
+            _enqueue_retry(project_dir, method, no_image=no_image, reason="session_expired")
+            _log_post_result(
+                content.topic, None, error=f"session_expired: {exc}",
+                pillar=content.pillar,
+            )
+            _notify(
+                "XP 게시 보류 — 재로그인 필요",
+                "브라우저 세션이 만료됐습니다. python -m xp x-browser-login 을 실행하세요.",
+            )
         except Exception as exc:  # noqa: BLE001
-            console.print(f"[bold red]❌ 게시 실패(생성 결과는 저장됨): {exc}[/]")
+            # 일시적 실패 — 유료 API로 넘기지 않고 다음 실행에서 브라우저로 재시도.
+            console.print(f"[bold red]❌ 브라우저 게시 실패(재시도 큐에 저장): {exc}[/]")
+            _enqueue_retry(project_dir, method, no_image=no_image, reason=str(exc))
             _log_post_result(content.topic, None, error=str(exc), pillar=content.pillar)
 
     return output
@@ -436,6 +592,11 @@ def cmd_auto(args: argparse.Namespace) -> None:
     가중치 기반으로 자동 선택해 계정 정체성을 일관되게 유지합니다.
     """
     config = load_config()
+
+    # 이번 슬롯의 새 글을 만들기 전에, 지난 실행에서 브라우저 게시에 실패해
+    # 큐에 쌓인 건들을 먼저 브라우저로 재시도한다(유료 API 폴백 없음).
+    if args.post:
+        _drain_retry_queue(config)
 
     from xp.topic_finder import TopicFinder
 
@@ -989,6 +1150,29 @@ def cmd_list(args: argparse.Namespace) -> None:
 
 
 # ──────────────────────────────────────────────
+# retry 명령 — 브라우저 게시 실패 큐 재시도
+# ──────────────────────────────────────────────
+
+
+def cmd_retry(args: argparse.Namespace) -> None:
+    """브라우저 게시에 실패해 큐에 쌓인 건들을 브라우저로 다시 게시합니다.
+
+    유료 API로 폴백하지 않습니다. `auto`도 매 실행 시작에 이 큐를 먼저 비웁니다.
+    """
+    config = load_config()
+    entries = _read_queue()
+    if not entries:
+        console.print("[dim]재시도 큐가 비어 있습니다.[/]")
+        return
+    _drain_retry_queue(config)
+    left = _read_queue()
+    if left:
+        console.print(f"[yellow]아직 {len(left)}건이 큐에 남아 있습니다.[/]")
+    else:
+        console.print("[bold green]✅ 큐를 모두 처리했습니다.[/]")
+
+
+# ──────────────────────────────────────────────
 # 결과 출력
 # ──────────────────────────────────────────────
 
@@ -1293,8 +1477,12 @@ def main() -> None:
     p_sched.add_argument(
         "--method",
         choices=["api", "browser", "auto"],
-        default="api",
-        help="게시 방식 (기본: api)",
+        default="browser",
+        help=(
+            "게시 방식 (기본: browser). browser는 헤드리스로 게시하고 실패 시 "
+            "재시도 큐에 넣어 다음 슬롯에 브라우저로 재도전합니다(유료 API 폴백 없음). "
+            "auto는 실패 시 유료 API로 폴백합니다."
+        ),
     )
     p_sched.set_defaults(func=cmd_schedule)
 
@@ -1357,6 +1545,12 @@ def main() -> None:
     # ── list ──
     p_list = subparsers.add_parser("list", help="생성 히스토리 보기")
     p_list.set_defaults(func=cmd_list)
+
+    # ── retry ── (브라우저 게시 실패 큐 재시도)
+    p_retry = subparsers.add_parser(
+        "retry", help="브라우저 게시 실패 큐를 브라우저로 재시도 (유료 API 폴백 없음)"
+    )
+    p_retry.set_defaults(func=cmd_retry)
 
     args = parser.parse_args()
     if args.command is None:

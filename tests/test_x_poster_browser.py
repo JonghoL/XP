@@ -15,7 +15,7 @@ from xp.models import (
     GeneratedTweet,
     PostType,
 )
-from xp.x_poster_browser import BrowserXPoster
+from xp.x_poster_browser import BrowserXPoster, SessionExpiredError
 
 
 def _fake_page():
@@ -31,7 +31,7 @@ def _fake_page():
     def ele(selector, timeout=None):
         if "toast" in selector:
             return toast
-        # 그 외 모든 셀렉터(작성창/파일입력/버튼)는 활성 상태의 요소로 취급
+        # 그 외 모든 셀렉터(로그인 신호/작성창/파일입력/버튼)는 활성 요소로 취급
         el = MagicMock()
         el.attr.return_value = None
         el.run_js.return_value = 10_000  # 본문 입력 길이 체크를 항상 통과시킴
@@ -62,14 +62,32 @@ class TestBrowserPost:
         assert "비상 게시" in results[0].text
         page.quit.assert_called_once()
 
-    def test_missing_textarea_raises(self):
+    def test_not_logged_in_raises_session_expired(self):
+        # 로그인/로그아웃 신호가 전혀 없는 페이지 = 세션 없음으로 판정.
+        # 유료 API 폴백 대신 SessionExpiredError로 명확히 구분해 올린다.
         poster = BrowserXPoster(profile="x", headless=True)
         page = MagicMock()
-        page.ele.return_value = None  # 작성창을 못 찾음
+        page.ele.return_value = None
+        with patch.object(poster, "_open_page", return_value=page):
+            with pytest.raises(SessionExpiredError, match="세션"):
+                poster.post_content(_single(), [])
+        # 세션 만료는 재시도하지 않으므로 브라우저는 정확히 한 번 닫힌다.
+        page.quit.assert_called_once()
+
+    def test_logged_in_missing_textarea_raises(self):
+        # 로그인은 돼 있으나 작성창을 못 찾는 경우 → 작성창 오류로 실패.
+        def ele(selector, timeout=None):
+            if any(k in selector for k in ("SideNav", "AppTabBar", "NewTweet")):
+                return MagicMock()  # 로그인 신호는 있음
+            return None  # 작성창 등은 못 찾음
+
+        page = MagicMock()
+        page.ele.side_effect = ele
+        poster = BrowserXPoster(profile="x", headless=True)
         with patch.object(poster, "_open_page", return_value=page):
             with pytest.raises(RuntimeError, match="작성창"):
-                poster.post_content(_single(), [])
-        page.quit.assert_called_once()  # 실패해도 브라우저는 닫아야 한다
+                poster.post_content(_single(), [], retries=1)
+        page.quit.assert_called_once()
 
     def test_thread_uses_add_button(self):
         content = GeneratedContent(
