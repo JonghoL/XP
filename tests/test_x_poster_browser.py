@@ -114,3 +114,36 @@ class TestBrowserPost:
         with patch.dict("sys.modules", {"DrissionPage": None}):
             with pytest.raises(RuntimeError, match="DrissionPage"):
                 poster._open_page()
+
+
+class TestStatusPermalink:
+    @staticmethod
+    def _toast(href):
+        toast = MagicMock()
+        if href is None:
+            toast.ele.return_value = None
+        else:
+            link = MagicMock()
+            link.attr.return_value = href
+            toast.ele.return_value = link
+        return toast
+
+    def test_relative_status_href_becomes_full_permalink(self):
+        toast = self._toast("/doncode_/status/123")
+        assert (
+            BrowserXPoster._status_permalink(toast)
+            == "https://x.com/doncode_/status/123"
+        )
+
+    def test_absolute_status_href_passthrough(self):
+        toast = self._toast("https://x.com/u/status/999")
+        assert BrowserXPoster._status_permalink(toast) == "https://x.com/u/status/999"
+
+    def test_non_status_link_ignored(self):
+        # 'View'가 아닌 다른 링크(설정/도움말 등)는 퍼머링크로 인정하지 않는다.
+        toast = self._toast("/settings")
+        assert BrowserXPoster._status_permalink(toast) is None
+
+    def test_no_link_returns_none(self):
+        toast = self._toast(None)
+        assert BrowserXPoster._status_permalink(toast) is None

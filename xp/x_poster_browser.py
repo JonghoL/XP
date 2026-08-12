@@ -702,32 +702,65 @@ class BrowserXPoster:
                 return
             time.sleep(1)
 
+    @staticmethod
+    def _status_permalink(toast) -> str | None:  # noqa: ANN001
+        """게시 완료 토스트의 'View' 링크에서 실제 트윗 퍼머링크를 뽑습니다.
+
+        토스트 안의 <a>가 `/user/status/123…` 형태일 때만 퍼머링크로 인정한다
+        (그 외 링크는 무시). 없으면 None.
+        """
+        link = toast.ele("css:a", timeout=1)
+        if not link:
+            return None
+        href = link.attr("href") or ""
+        if not href:
+            return None
+        full = href if href.startswith("http") else f"https://x.com{href}"
+        return full if "/status/" in full else None
+
     def _wait_confirmation(
         self, page, timeout: int = 30, debug_dir: str | Path | None = None
     ) -> str:
         """게시 확인 신호를 기다려 게시물 URL을 최대한 알아냅니다.
 
-        토스트가 가장 확실한 신호지만, 폴링 사이 짧게 떴다 사라지면 놓칠 수
-        있다. 그런 경우를 대비해 URL이 컴포저를 벗어났는지 / 작성창이
-        사라졌는지도 보조 신호로 함께 확인한다.
+        가장 좋은 결과는 게시 완료 토스트의 'View' 링크가 가리키는 실제 트윗
+        퍼머링크(`/user/status/…`)다. 이를 우선으로 하되, 토스트가 폴링 사이
+        짧게 떴다 사라지거나 링크가 없을 수 있으므로, '게시 확인'(링크 없는
+        토스트 / 컴포저 이탈 / 작성창 소멸) 신호를 잡으면 짧은 유예 동안
+        퍼머링크를 더 노려본 뒤, 못 잡으면 확인된 폴백 URL을 돌려준다.
         """
         deadline = time.time() + timeout
+        fallback: str | None = None
+        grace_deadline: float | None = None
         while time.time() < deadline:
             toast = page.ele(SEL_TOAST, timeout=1)
             if toast:
-                link = toast.ele("css:a", timeout=1)
-                if link:
-                    href = link.attr("href") or ""
-                    if href:
-                        return href if href.startswith("http") else f"https://x.com{href}"
+                permalink = self._status_permalink(toast)
+                if permalink:
+                    return permalink
                 # 토스트는 떴지만 링크가 없으면 게시는 된 것으로 본다.
-                return "https://x.com/home"
+                if fallback is None:
+                    fallback = "https://x.com/home"
+
             cur = self._url(page)
-            if "/compose/" not in cur:
-                return cur
-            if not page.ele(SEL_TEXTAREA.format(i=0), timeout=1):
-                return "https://x.com/home"
+            if "/status/" in cur and "/compose/" not in cur:
+                return cur  # 게시 후 퍼머링크로 이동한 경우
+            if fallback is None:
+                if "/compose/" not in cur and cur:
+                    fallback = cur
+                elif not page.ele(SEL_TEXTAREA.format(i=0), timeout=1):
+                    fallback = "https://x.com/home"
+
+            if fallback is not None:
+                # 게시는 확인됨 — 퍼머링크를 잠깐(6초) 더 노린 뒤 폴백 반환.
+                if grace_deadline is None:
+                    grace_deadline = time.time() + 6
+                elif time.time() >= grace_deadline:
+                    return fallback
             time.sleep(0.5)
+
+        if fallback is not None:
+            return fallback
         dump = self._dump_debug(page, debug_dir)
         raise RuntimeError(
             f"게시 확인을 받지 못했습니다. 실제 게시 여부를 직접 확인하세요. 디버그: {dump}"
