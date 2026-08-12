@@ -252,8 +252,26 @@ XP는 상주 데몬 없이, OS의 스케줄러(cron, Windows 작업 스케줄러
 쉬우므로, 하루 1~2회 정도의 고정 시간대로 발행량을 낮추는 쪽을 권장합니다.
 
 ```powershell
-python -m xp schedule --times "07:30,20:00" --upload --post --method auto
+python -m xp schedule --times "07:30,20:00" --upload --post --method browser
 ```
+
+> 💡 **브라우저 우선 · 유료 API 최소화** — 스케줄 게시는 `--method browser`를
+> 권장합니다(기본값). 이 경로는 다음을 보장합니다.
+>
+> - **세션 쿠키 파일 영속**: 로그인 시 쿠키를 `~/.xp/x_browser/xp_session.json`으로
+>   저장하고 게시 직전 다시 주입합니다. 크론(GUI 세션 없는 launchd)에서 Chromium이
+>   프로필 쿠키를 flush하지 못해 세션이 통째로 사라지던 문제를 회피합니다.
+> - **헤드리스 기본**: 스케줄 실행은 창을 띄우지 않습니다(`XP_BROWSER_HEADLESS=0`으로 끌 수 있음).
+> - **게시 전 로그인 검증**: 세션이 만료됐으면 '작성창 못 찾음' 같은 모호한 실패
+>   대신 즉시 구분해 알리고, **유료 API로 폴백하지 않습니다.**
+> - **재시도 큐**: 일시적 실패는 백오프 3회 재시도하고, 그래도 실패하면
+>   `post-queue.jsonl`에 넣어 **다음 스케줄 슬롯에서 브라우저로 다시 시도**합니다
+>   (`xp auto`는 매 실행 시작에 큐를 먼저 비웁니다). 수동 재시도는 `python -m xp retry`.
+> - **세션 만료 알림**: 재로그인이 필요하면 macOS 데스크톱 알림 + 로그로 통지합니다.
+>   `python -m xp x-browser-login`으로 다시 로그인하면 큐가 다음 실행에 자동 처리됩니다.
+>
+> `--method auto`는 브라우저 실패 시 **유료 API로 폴백**하므로, 비용을 피하려면
+> `browser`를 쓰세요.
 
 **하루 한 번 고정 시각**
 
@@ -343,7 +361,8 @@ pip install -e ".[browser]"
 ```
 
 전용 브라우저 프로필에 **최초 1회 수동 로그인**해 세션을 만듭니다
-(비밀번호를 저장하지 않고 세션 쿠키만 재사용):
+(비밀번호를 저장하지 않고 세션 쿠키만 재사용). 로그인은 성공을 실제로 검증한
+뒤에만 쿠키를 `~/.xp/x_browser/xp_session.json`으로 저장합니다:
 
 ```powershell
 python -m xp x-browser-login
@@ -352,20 +371,31 @@ python -m xp x-browser-login
 이후 `--method`로 게시 방식을 고릅니다:
 
 ```powershell
-# 브라우저 먼저 시도, 실패 시 API로 폴백 (기본 auto 동작, 권장)
+# 브라우저만 사용 (유료 API 폴백 없음, 스케줄 권장) — 실패 시 재시도 큐로
+python -m xp post --dir "output/..." --method browser
+
+# 브라우저 먼저, 실패 시 유료 API로 폴백
 python -m xp post --dir "output/..." --method auto
 
-# API 강제
+# API 강제 (유료)
 python -m xp post --dir "output/..." --method api
-
-# 브라우저 강제
-python -m xp post --dir "output/..." --method browser
 ```
 
+게시 방식별 동작:
+
+| method | 동작 | 유료 API |
+|--------|------|:-------:|
+| `browser` | 헤드리스 게시. 일시 실패는 3회 재시도, 세션 만료면 즉시 중단·알림 | ❌ 안 씀 |
+| `auto` | 브라우저 먼저, 실패하면 API로 폴백 | ⚠️ 실패 시 사용 |
+| `api` | X API로만 게시 | ✅ 항상 |
+
 > ⚠️ 웹 UI 자동화는 X의 DOM 변경·봇 탐지에 취약하고 X 이용약관상 권장되지
-> 않습니다. `--method auto`는 브라우저를 먼저 시도하되, DrissionPage 미설치나
-> 세션 만료 등으로 실패하면 API로 자동 폴백합니다.
-> `XP_BROWSER_PROFILE`(프로필 경로), `XP_BROWSER_HEADLESS=1`(헤드리스)로 조정합니다.
-> 크론에서 이 방식을 쓰려면, 실행에 사용하는 파이썬 인터프리터에 브라우저
-> 의존성(`pip install -e ".[browser]"`)이 설치돼 있어야 합니다 — 그렇지 않으면
-> 매번 브라우저 시도가 실패하고 API로만 폴백됩니다.
+> 않습니다. `XP_BROWSER_PROFILE`(프로필 경로), `XP_BROWSER_HEADLESS=0`(창 표시)로
+> 조정합니다(기본은 헤드리스). 크론에서 이 방식을 쓰려면, 실행에 사용하는
+> 파이썬 인터프리터에 브라우저 의존성(`pip install -e ".[browser]"`)이 설치돼
+> 있어야 합니다.
+>
+> **세션이 만료되면** `browser`는 유료 API로 넘어가지 않고 해당 건을
+> `post-queue.jsonl`에 넣은 뒤 재로그인을 알립니다. `python -m xp x-browser-login`
+> 으로 다시 로그인하면, 다음 `xp auto` 실행(또는 `python -m xp retry`)이 큐를
+> 자동으로 비워 브라우저로 재게시합니다.
