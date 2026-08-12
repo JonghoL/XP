@@ -130,6 +130,37 @@ class TestContentGeneratorColumn:
         assert result.topic == "내가정한제목"
 
 
+class TestContentGeneratorHumanize:
+    @patch("xp.xai_client._post_json")
+    @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
+    def test_humanize_texts_preserves_order_and_count(
+        self, mock_get_key, mock_post, xai_config
+    ):
+        mock_post.return_value = _responses_payload(
+            {"texts": ["다듬어진 첫 번째", "다듬어진 두 번째"]}
+        )
+
+        gen = ContentGenerator(xai_config)
+        result = gen.humanize_texts(["원본 첫 번째", "원본 두 번째"])
+
+        assert result == ["다듬어진 첫 번째", "다듬어진 두 번째"]
+
+    def test_humanize_texts_empty_input_short_circuits(self, xai_config):
+        gen = ContentGenerator(xai_config)
+        assert gen.humanize_texts([]) == []
+
+    @patch("xp.xai_client._post_json")
+    @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")
+    def test_humanize_texts_raises_on_count_mismatch(
+        self, mock_get_key, mock_post, xai_config
+    ):
+        mock_post.return_value = _responses_payload({"texts": ["항목 하나만 옴"]})
+
+        gen = ContentGenerator(xai_config)
+        with pytest.raises(RuntimeError, match="개수 불일치"):
+            gen.humanize_texts(["원본 첫 번째", "원본 두 번째"])
+
+
 class TestContentGeneratorThread:
     @patch("xp.xai_client._post_json")
     @patch("xp.config.XAIConfig.get_access_token", return_value="fake-token")

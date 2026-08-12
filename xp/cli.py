@@ -149,6 +149,7 @@ def _generate_pipeline(
     extra: str | None,
     no_image: bool,
     no_video: bool,
+    no_humanize: bool = False,
     upload: bool,
     post: bool,
     method: str,
@@ -181,10 +182,30 @@ def _generate_pipeline(
         content,
         no_image=no_image,
         no_video=no_video,
+        no_humanize=no_humanize,
         upload=upload,
         post=post,
         method=method,
     )
+
+
+def _humanize_content(config: AppConfig, content: GeneratedContent) -> None:
+    """게시 직전, 생성된 문구에서 AI 특유의 문체(AI향)를 제거합니다.
+
+    실패해도 원문을 그대로 사용해 파이프라인이 중단되지 않도록 합니다.
+    """
+    gen = ContentGenerator(config.xai)
+    try:
+        if content.thread:
+            texts = [t.text for t in content.thread.tweets]
+            humanized = gen.humanize_texts(texts)
+            for tweet, text in zip(content.thread.tweets, humanized):
+                tweet.text = text
+        elif content.tweet:
+            humanized = gen.humanize_texts([content.tweet.text])
+            content.tweet.text = humanized[0]
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]⚠️  AI향 제거 실패(원문 그대로 사용): {exc}[/]")
 
 
 def _finalize_output(
@@ -193,14 +214,19 @@ def _finalize_output(
     *,
     no_image: bool,
     no_video: bool = False,
+    no_humanize: bool = False,
     upload: bool,
     post: bool,
     method: str,
 ) -> ProjectOutput:
-    """생성된 콘텐츠에 대해 이미지·영상·저장·업로드·게시를 수행합니다.
+    """생성된 콘텐츠에 대해 AI향 제거·이미지·영상·저장·업로드·게시를 수행합니다.
 
-    `generate`/`auto`/`column` 명령이 공유하는 후처리 파이프라인입니다.
+    `generate`/`auto`/`column`/`article` 명령이 공유하는 후처리 파이프라인입니다.
     """
+    # 1) AI향 제거 (사람이 쓴 것처럼 최종 다듬기)
+    if not no_humanize:
+        _humanize_content(config, content)
+
     # 프로젝트 디렉토리 생성
     project_dir = _make_project_dir(config.output_dir, content.topic)
 
@@ -275,6 +301,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         extra=args.extra,
         no_image=args.no_image,
         no_video=args.no_video,
+        no_humanize=args.no_humanize,
         upload=args.upload,
         post=args.post,
         method=args.method,
@@ -347,6 +374,7 @@ def cmd_column(args: argparse.Namespace) -> None:
             content,
             no_image=args.no_image,
             no_video=args.no_video,
+            no_humanize=args.no_humanize,
             upload=args.upload,
             post=args.post,
             method=args.method,
@@ -440,6 +468,7 @@ def cmd_auto(args: argparse.Namespace) -> None:
         extra=args.extra,
         no_image=args.no_image,
         no_video=args.no_video,
+        no_humanize=args.no_humanize,
         upload=args.upload,
         post=args.post,
         method=args.method,
@@ -899,7 +928,8 @@ def cmd_article(args: argparse.Namespace) -> None:
         )
         output = _finalize_output(
             config, content,
-            no_image=args.no_image, no_video=True, upload=False, post=False, method="api",
+            no_image=args.no_image, no_video=True, no_humanize=args.no_humanize,
+            upload=False, post=False, method="api",
         )
         _print_result(output)
 
@@ -1095,6 +1125,10 @@ def main() -> None:
         help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
     )
     p_gen.add_argument(
+        "--no-humanize", action="store_true",
+        help="게시 직전 AI향 제거(자연스럽게 재작성) 단계 생략",
+    )
+    p_gen.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
     )
     p_gen.add_argument(
@@ -1123,6 +1157,10 @@ def main() -> None:
     p_col.add_argument(
         "--no-video", action="store_true",
         help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
+    )
+    p_col.add_argument(
+        "--no-humanize", action="store_true",
+        help="게시 직전 AI향 제거(자연스럽게 재작성) 단계 생략",
     )
     p_col.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
@@ -1195,6 +1233,10 @@ def main() -> None:
     p_auto.add_argument(
         "--no-video", action="store_true",
         help="이미지 → 영상(Grok Image-to-Video) 변환 생략 (이미지만 사용)",
+    )
+    p_auto.add_argument(
+        "--no-humanize", action="store_true",
+        help="게시 직전 AI향 제거(자연스럽게 재작성) 단계 생략",
     )
     p_auto.add_argument(
         "--upload", "-u", action="store_true", help="Google Drive에 업로드"
@@ -1293,6 +1335,10 @@ def main() -> None:
     p_art.add_argument("--tone", help="글의 톤")
     p_art.add_argument("--extra", help="추가 지시 사항")
     p_art.add_argument("--no-image", action="store_true", help="커버 이미지 생성 생략")
+    p_art.add_argument(
+        "--no-humanize", action="store_true",
+        help="게시 직전 AI향 제거(자연스럽게 재작성) 단계 생략",
+    )
     p_art.add_argument(
         "--keep", action="store_true", help="처리 후 input md를 이동하지 않음"
     )
