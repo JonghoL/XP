@@ -177,7 +177,7 @@ class ContentGenerator:
             self._config,
             SYSTEM_PROMPT_HUMANIZE,
             user_prompt,
-            temperature=0.7,
+            temperature=0.3,
             use_search_tools=False,
         )
         data = extract_json(raw)
