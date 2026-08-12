@@ -13,6 +13,7 @@ DrissionPage로 실제 Chromium을 구동해 x.com 웹 UI로 트윗을 게시한
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -25,6 +26,36 @@ console = Console()
 
 DEFAULT_PROFILE = Path.home() / ".xp" / "x_browser"
 COMPOSE_URL = "https://x.com/compose/post"
+HOME_URL = "https://x.com/home"
+
+# 로그인 세션(쿠키)을 Chromium 프로필과 별개로 저장하는 파일명(프로필 폴더 안).
+# 크론(macOS launchd 등 GUI 세션이 없는 환경)에서는 Chromium이 종료 시 쿠키를
+# 디스크로 flush하지 못해 프로필 쿠키가 통째로 사라지는 일이 있다(실측: jar 0개).
+# 그래서 로그인 성공 시 쿠키를 이 파일로 내보내고, 게시 직전 다시 주입해
+# 프로필의 쿠키 영속에 의존하지 않도록 한다.
+SESSION_FILE_NAME = "xp_session.json"
+
+# 로그인 상태 판정용 셀렉터. 로그인된 홈에서만 보이는 요소들.
+SEL_LOGGED_IN = (
+    'css:[data-testid="SideNav_AccountSwitcher_Button"], '
+    '[data-testid="AppTabBar_Home_Link"], '
+    '[data-testid="SideNav_NewTweet_Button"]'
+)
+# 로그아웃(랜딩/로그인) 상태 신호.
+SEL_LOGGED_OUT = (
+    'css:[data-testid="loginButton"], '
+    '[data-testid="google_sign_in_container"], '
+    'a[href="/login"]'
+)
+
+
+class SessionExpiredError(RuntimeError):
+    """브라우저 로그인 세션이 없거나 만료됨.
+
+    재시도로는 복구할 수 없고 사람이 다시 로그인해야 하는 상황이다
+    (`python -m xp x-browser-login`). 일시적 실패와 구분해, 재시도/폴백
+    로직이 이 예외는 즉시 위로 전달해 재로그인 알림으로 이어지게 한다.
+    """
 
 # x.com 웹 UI 셀렉터 (data-testid 기반). DOM 변경 시 여기만 고치면 된다.
 SEL_TEXTAREA = 'css:div[data-testid="tweetTextarea_{i}"]'
@@ -88,13 +119,18 @@ class BrowserXPoster:
     ) -> None:
         self._profile = Path(profile or os.environ.get("XP_BROWSER_PROFILE") or DEFAULT_PROFILE)
         if headless is None:
-            headless = os.environ.get("XP_BROWSER_HEADLESS", "0").lower() in (
+            # 기본값을 헤드리스로 둔다. 스케줄(크론/launchd)은 GUI 세션이 없어
+            # 창을 띄우는 방식이 불안정하므로, 명시적으로 끄지 않는 한 헤드리스로
+            # 동작한다. 최초 수동 로그인(x-browser-login)만 headless=False로 연다.
+            headless = os.environ.get("XP_BROWSER_HEADLESS", "1").lower() in (
                 "1",
                 "true",
                 "yes",
                 "on",
             )
         self._headless = headless
+        # 프로필과 별개로 세션 쿠키를 보관할 파일(프로필 폴더 안).
+        self._session_file = self._profile / SESSION_FILE_NAME
 
     # ──────────────────────────────────────────
     # 브라우저 수명 관리
@@ -117,6 +153,77 @@ class BrowserXPoster:
         return ChromiumPage(options)
 
     # ──────────────────────────────────────────
+    # 세션(쿠키) 영속 — 프로필 flush에 의존하지 않는다
+    # ──────────────────────────────────────────
+
+    def _load_session_cookies(self) -> list | None:
+        """저장된 세션 쿠키(list[dict])를 읽습니다(없거나 손상 시 None)."""
+        if not self._session_file.exists():
+            return None
+        try:
+            data = json.loads(self._session_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data or None
+
+    def _save_session_cookies(self, page) -> int:  # noqa: ANN001
+        """현재 페이지의 x.com 쿠키를 세션 파일로 내보냅니다. 저장 개수 반환."""
+        try:
+            cookies = page.cookies(all_domains=False, all_info=True)
+            data = [dict(c) for c in cookies]
+        except Exception:  # noqa: BLE001
+            return 0
+        try:
+            self._session_file.write_text(
+                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            return 0
+        return len(data)
+
+    def _restore_session(self, page) -> bool:  # noqa: ANN001
+        """저장된 세션 쿠키를 브라우저에 주입합니다(성공 시 True).
+
+        쿠키를 주입하려면 먼저 대상 도메인에 접근해 둔다(로그아웃 랜딩이라도 무방).
+        """
+        cookies = self._load_session_cookies()
+        if not cookies:
+            return False
+        try:
+            page.get("https://x.com")
+            page.set.cookies(cookies)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _wait_logged_in(page, timeout: int = 15) -> bool:  # noqa: ANN001
+        """로그인 상태가 확인되면 True, 로그아웃 신호를 보면 False를 반환합니다."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if page.ele(SEL_LOGGED_IN, timeout=1):
+                return True
+            if page.ele(SEL_LOGGED_OUT, timeout=1):
+                return False
+            time.sleep(1)
+        return False
+
+    def _ensure_logged_in(self, page, *, debug_dir=None) -> None:  # noqa: ANN001
+        """게시 전 로그인 상태를 확인합니다. 세션이 없으면 즉시 실패시킵니다.
+
+        '트윗 작성창을 못 찾음' 같은 모호한 오류 대신, 재로그인이 필요한
+        상황임을 SessionExpiredError로 명확히 구분해 위로 올린다.
+        """
+        page.get(HOME_URL)
+        if self._wait_logged_in(page, timeout=15):
+            return
+        dump = self._dump_debug(page, debug_dir)
+        raise SessionExpiredError(
+            "X 로그인 세션이 없거나 만료됐습니다. 재로그인이 필요합니다: "
+            f"python -m xp x-browser-login (덤프: {dump})"
+        )
+
+    # ──────────────────────────────────────────
     # 최초 1회 로그인
     # ──────────────────────────────────────────
 
@@ -126,19 +233,50 @@ class BrowserXPoster:
         로그인 세션은 프로필에 저장되어 이후 자동 게시에 재사용됩니다.
         """
         page = self._open_page()
-        page.get("https://x.com/login")
-        console.print(
-            "[bold cyan]브라우저에서 X 계정으로 로그인하세요.[/]\n"
-            "  2단계 인증까지 완료해 홈 타임라인이 보이면 준비 끝입니다.\n"
-            f"  세션 저장 위치: {self._profile}"
-        )
         try:
-            input("로그인을 마쳤으면 이 창에서 Enter를 누르세요... ")
-        except EOFError:
-            # 비대화형 환경 대비: 잠시 대기
-            time.sleep(60)
-        page.quit()
-        console.print("[bold green]✅ 로그인 세션 저장 완료.[/]")
+            # 기존 세션이 있으면 복원해 이미 로그인 상태인지 먼저 확인한다.
+            self._restore_session(page)
+            page.get(HOME_URL)
+            if self._wait_logged_in(page, timeout=8):
+                n = self._save_session_cookies(page)
+                console.print(
+                    f"[bold green]✅ 이미 로그인돼 있습니다. 세션 갱신 완료 "
+                    f"(쿠키 {n}개) → {self._session_file}[/]"
+                )
+                return
+
+            page.get("https://x.com/login")
+            console.print(
+                "[bold cyan]브라우저에서 X 계정으로 로그인하세요.[/]\n"
+                "  2단계 인증까지 완료해 홈 타임라인이 보이면 준비 끝입니다.\n"
+                f"  세션 저장 위치: {self._session_file}"
+            )
+            try:
+                input("로그인을 마쳤으면 이 창에서 Enter를 누르세요... ")
+            except EOFError:
+                # 비대화형 환경 대비: 잠시 대기
+                time.sleep(60)
+
+            # 로그인 성공을 실제로 검증한 뒤에만 세션을 저장한다.
+            page.get(HOME_URL)
+            if not self._wait_logged_in(page, timeout=20):
+                console.print(
+                    "[bold red]❌ 로그인이 확인되지 않았습니다. 세션을 저장하지 "
+                    "않습니다. 로그인(2단계 인증 포함)을 마치고 다시 실행하세요.[/]"
+                )
+                return
+            n = self._save_session_cookies(page)
+            if n == 0:
+                console.print(
+                    "[bold red]❌ 쿠키를 저장하지 못했습니다. 다시 시도하세요.[/]"
+                )
+                return
+            console.print(
+                f"[bold green]✅ 로그인 세션 저장 완료 (쿠키 {n}개) → "
+                f"{self._session_file}[/]"
+            )
+        finally:
+            page.quit()
 
     # ──────────────────────────────────────────
     # X 아티클(배너형 롱폼) 발행 — 어시스트 방식
@@ -394,8 +532,14 @@ class BrowserXPoster:
         image_paths: list[Path] | None = None,
         *,
         debug_dir: str | Path | None = None,
+        retries: int = 3,
     ) -> list[PostResult]:
-        """콘텐츠 유형에 맞춰 브라우저로 트윗/스레드를 게시합니다."""
+        """콘텐츠 유형에 맞춰 브라우저로 트윗/스레드를 게시합니다.
+
+        일시적 실패(로딩 지연·DOM 경합·네트워크)는 `retries`회까지 백오프
+        재시도한다. 세션 만료(SessionExpiredError)는 재시도로 복구되지 않으므로
+        즉시 위로 전달한다(재로그인 알림용).
+        """
         images = image_paths or []
 
         if content.post_type in (PostType.SINGLE, PostType.COLUMN):
@@ -412,12 +556,35 @@ class BrowserXPoster:
             if reply_text:
                 texts.append(reply_text)
 
-        page = self._open_page()
-        try:
-            result = self._compose_and_post(page, texts, images, debug_dir=debug_dir)
-        finally:
-            page.quit()
-        return [result]
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            page = self._open_page()
+            try:
+                # 저장된 세션 쿠키를 주입하고, 로그인 상태를 먼저 검증한다.
+                self._restore_session(page)
+                self._ensure_logged_in(page, debug_dir=debug_dir)
+                result = self._compose_and_post(
+                    page, texts, images, debug_dir=debug_dir
+                )
+                # 게시 성공 시 갱신된 세션(회전된 쿠키)을 다시 영속화한다.
+                self._save_session_cookies(page)
+                return [result]
+            except SessionExpiredError:
+                # 재로그인이 필요한 상황 — 재시도 무의미, 즉시 전달.
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                console.print(
+                    f"[yellow]   ⚠️ 브라우저 게시 시도 {attempt}/{retries} "
+                    f"실패: {exc}[/]"
+                )
+                if attempt < retries:
+                    time.sleep(min(5 * attempt, 20))
+            finally:
+                page.quit()
+
+        assert last_exc is not None
+        raise last_exc
 
     # ──────────────────────────────────────────
     # 내부: 작성 및 게시
@@ -535,32 +702,65 @@ class BrowserXPoster:
                 return
             time.sleep(1)
 
+    @staticmethod
+    def _status_permalink(toast) -> str | None:  # noqa: ANN001
+        """게시 완료 토스트의 'View' 링크에서 실제 트윗 퍼머링크를 뽑습니다.
+
+        토스트 안의 <a>가 `/user/status/123…` 형태일 때만 퍼머링크로 인정한다
+        (그 외 링크는 무시). 없으면 None.
+        """
+        link = toast.ele("css:a", timeout=1)
+        if not link:
+            return None
+        href = link.attr("href") or ""
+        if not href:
+            return None
+        full = href if href.startswith("http") else f"https://x.com{href}"
+        return full if "/status/" in full else None
+
     def _wait_confirmation(
         self, page, timeout: int = 30, debug_dir: str | Path | None = None
     ) -> str:
         """게시 확인 신호를 기다려 게시물 URL을 최대한 알아냅니다.
 
-        토스트가 가장 확실한 신호지만, 폴링 사이 짧게 떴다 사라지면 놓칠 수
-        있다. 그런 경우를 대비해 URL이 컴포저를 벗어났는지 / 작성창이
-        사라졌는지도 보조 신호로 함께 확인한다.
+        가장 좋은 결과는 게시 완료 토스트의 'View' 링크가 가리키는 실제 트윗
+        퍼머링크(`/user/status/…`)다. 이를 우선으로 하되, 토스트가 폴링 사이
+        짧게 떴다 사라지거나 링크가 없을 수 있으므로, '게시 확인'(링크 없는
+        토스트 / 컴포저 이탈 / 작성창 소멸) 신호를 잡으면 짧은 유예 동안
+        퍼머링크를 더 노려본 뒤, 못 잡으면 확인된 폴백 URL을 돌려준다.
         """
         deadline = time.time() + timeout
+        fallback: str | None = None
+        grace_deadline: float | None = None
         while time.time() < deadline:
             toast = page.ele(SEL_TOAST, timeout=1)
             if toast:
-                link = toast.ele("css:a", timeout=1)
-                if link:
-                    href = link.attr("href") or ""
-                    if href:
-                        return href if href.startswith("http") else f"https://x.com{href}"
+                permalink = self._status_permalink(toast)
+                if permalink:
+                    return permalink
                 # 토스트는 떴지만 링크가 없으면 게시는 된 것으로 본다.
-                return "https://x.com/home"
+                if fallback is None:
+                    fallback = "https://x.com/home"
+
             cur = self._url(page)
-            if "/compose/" not in cur:
-                return cur
-            if not page.ele(SEL_TEXTAREA.format(i=0), timeout=1):
-                return "https://x.com/home"
+            if "/status/" in cur and "/compose/" not in cur:
+                return cur  # 게시 후 퍼머링크로 이동한 경우
+            if fallback is None:
+                if "/compose/" not in cur and cur:
+                    fallback = cur
+                elif not page.ele(SEL_TEXTAREA.format(i=0), timeout=1):
+                    fallback = "https://x.com/home"
+
+            if fallback is not None:
+                # 게시는 확인됨 — 퍼머링크를 잠깐(6초) 더 노린 뒤 폴백 반환.
+                if grace_deadline is None:
+                    grace_deadline = time.time() + 6
+                elif time.time() >= grace_deadline:
+                    return fallback
             time.sleep(0.5)
+
+        if fallback is not None:
+            return fallback
         dump = self._dump_debug(page, debug_dir)
         raise RuntimeError(
             f"게시 확인을 받지 못했습니다. 실제 게시 여부를 직접 확인하세요. 디버그: {dump}"
