@@ -148,6 +148,10 @@ class BrowserXPoster:
         self._profile.mkdir(parents=True, exist_ok=True)
         options = ChromiumOptions()
         options.set_user_data_path(str(self._profile))
+        # 디버그 포트를 고정 9222로 두면 같은 머신의 다른 도구(다른 Chrome
+        # CDP 자동화)가 그 포트를 먼저 점유했을 때 연결 대상이 뒤바뀌어
+        # BrowserConnectError가 난다. 실행마다 빈 포트를 자동 배정해 회피한다.
+        options.auto_port()
         if self._headless:
             options.headless()
         return ChromiumPage(options)
