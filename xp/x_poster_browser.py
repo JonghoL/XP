@@ -408,6 +408,13 @@ class BrowserXPoster:
         """
         page = self._open_page()
         try:
+            # 저장된 세션 쿠키를 주입하고, 로그인 상태를 먼저 검증한다.
+            # (post_content와 동일한 순서. 이게 빠지면 프로필 쿠키가 살아있어도
+            # 새로 연 페이지가 로그아웃 상태로 시작해 매번 재로그인을 요구한다.)
+            self._restore_session(page)
+            self._ensure_logged_in(page, debug_dir=debug_dir)
+            self._save_session_cookies(page)
+
             console.print("[bold cyan]🌐 X 아티클 작성기를 자동 조작합니다...[/]")
             # 허브 진입 후 'create' 버튼을 SPA에서 클릭해 편집기로 들어간다.
             page.get(ARTICLE_HUB_URL)
